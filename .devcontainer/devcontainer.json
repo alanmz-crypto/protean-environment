@@ -1,0 +1,25 @@
+{
+  "name": "Protean isolated worker",
+  "build": {
+    "dockerfile": "Dockerfile"
+  },
+  "remoteUser": "vscode",
+  "remoteEnv": {
+    "DEEPSEEK_API_KEY": "${localEnv:DEEPSEEK_API_KEY}"
+  },
+  "mounts": [
+    {
+      "source": "${localEnv:SSH_AUTH_SOCK}",
+      "target": "/tmp/ssh-agent-sock",
+      "type": "bind"
+    }
+  ],
+  "containerEnv": {
+    "SSH_AUTH_SOCK": "/tmp/ssh-agent-sock"
+  },
+  "customizations": {
+    "vscode": {
+      "extensions": []
+    }
+  }
+}

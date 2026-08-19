@@ -1,0 +1,7 @@
+# Runtime / container-local state
+.crush/
+.local/share/
+*.db
+*.db-wal
+*.db-shm
+*.log
