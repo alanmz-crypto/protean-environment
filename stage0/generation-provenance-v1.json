@@ -1,0 +1,15 @@
+{
+  "status": "FROZEN (Ryan freeze decision; awaiting Stage-0 execution authorization)",
+  "seed_rule": "protean-stage0-v1:<first 16 hex of immutable starting main SHA 26eb0ce24674d2906569fa99a72e7329fe7e79e2>",
+  "seed": "protean-stage0-v1:26eb0ce24674d290",
+  "generator": "generate_structured_cases (frozen substrate)",
+  "rendering_repair": "Cursor-specified _render_context change: {p_now}/{q_now}/{p_previous} -> satisfied/unmet (selected per-component, not truth_label); template-bank observed_event reworded; removed literal true/false tokens",
+  "template_bank": "stage0/template-bank-v1.json",
+  "template_bank_sha256": "295fe92fe12ba14470166d6b160492fb1564d29b06dc46500f8b2cbfdf73c758",
+  "case_set_sha256": "06fe8d471b1fbbc226696ed6d80b706cc84a6040a7fb91a93814343420291556",
+  "allocation": "80 cases; 5 structures x 16; 8/8 per structure; 40/40 overall",
+  "truth_agreement_80_of_80": true,
+  "no_literal_boolean_tokens": true,
+  "no_hidden_metadata_in_payload": true,
+  "deterministic": true
+}

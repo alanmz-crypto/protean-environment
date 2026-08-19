@@ -1,0 +1,807 @@
+{
+  "seed": "protean-stage0-v1:26eb0ce24674d290",
+  "template_bank_sha256": "295fe92fe12ba14470166d6b160492fb1564d29b06dc46500f8b2cbfdf73c758",
+  "case_set_sha256": "06fe8d471b1fbbc226696ed6d80b706cc84a6040a7fb91a93814343420291556",
+  "cases": [
+    {
+      "case_id": "S0-001",
+      "structure_id": "ACTIVE AND P",
+      "truth_label": false,
+      "commitment": "the control office is planned to dispatch the maintenance crew while the commitment remains active and the alarm relay holds.",
+      "trigger_condition": "Eligibility requires an active lifecycle and the alarm relay.",
+      "prior_state": "Lifecycle at window start: CANCELLED.",
+      "observed_event": "Current reading of the alarm relay: satisfied.",
+      "lifecycle_state": "Lifecycle is CANCELLED."
+    },
+    {
+      "case_id": "S0-002",
+      "structure_id": "P AND NOT Q",
+      "truth_label": false,
+      "commitment": "the station is instructed to engage the backup supply when the primary feed holds and the reserve link does not.",
+      "trigger_condition": "Triggering combination: the primary feed present, the reserve link absent.",
+      "prior_state": "The window began with the primary feed unresolved and the reserve link unobserved.",
+      "observed_event": "Current readings: the primary feed is unmet; the reserve link is unmet.",
+      "lifecycle_state": "Commitment lifecycle: ACTIVE."
+    },
+    {
+      "case_id": "S0-003",
+      "structure_id": "P AND NOT Q",
+      "truth_label": false,
+      "commitment": "the reactor module is instructed to activate the cooling loop when the heat threshold holds and the safety interlock does not.",
+      "trigger_condition": "Triggering combination: the heat threshold present, the safety interlock absent.",
+      "prior_state": "The window began with the heat threshold unresolved and the safety interlock unobserved.",
+      "observed_event": "Current readings: the heat threshold is satisfied; the safety interlock is satisfied.",
+      "lifecycle_state": "Commitment lifecycle: ACTIVE."
+    },
+    {
+      "case_id": "S0-004",
+      "structure_id": "T2(P)",
+      "truth_label": true,
+      "commitment": "the control office commits to dispatch the maintenance crew after two consecutive observations of the alarm relay.",
+      "trigger_condition": "Persistence rule: the alarm relay must remain satisfied across two consecutive checks.",
+      "prior_state": "Earlier reading of the alarm relay: satisfied.",
+      "observed_event": "Latest reading of the alarm relay: satisfied.",
+      "lifecycle_state": "Commitment lifecycle: ACTIVE."
+    },
+    {
+      "case_id": "S0-005",
+      "structure_id": "ACTIVE AND P",
+      "truth_label": true,
+      "commitment": "the field unit is planned to transmit the status packet while the commitment remains active and the network uplink holds.",
+      "trigger_condition": "Eligibility requires an active lifecycle and the network uplink.",
+      "prior_state": "Lifecycle at window start: ACTIVE.",
+      "observed_event": "Current reading of the network uplink: satisfied.",
+      "lifecycle_state": "Lifecycle is ACTIVE."
+    },
+    {
+      "case_id": "S0-006",
+      "structure_id": "ACTIVE AND P",
+      "truth_label": false,
+      "commitment": "the process unit will open the valve line if the commitment is still active and the line pressure is satisfied.",
+      "trigger_condition": "Condition for firing: lifecycle active and the line pressure satisfied.",
+      "prior_state": "The commitment lifecycle was CANCELLED entering the window.",
+      "observed_event": "Observation now: the line pressure is unmet.",
+      "lifecycle_state": "Lifecycle is CANCELLED."
+    },
+    {
+      "case_id": "S0-007",
+      "structure_id": "T2(P)",
+      "truth_label": false,
+      "commitment": "the warehouse unit commits to restock the shelf after two consecutive observations of the dock sensor.",
+      "trigger_condition": "Persistence rule: the dock sensor must remain satisfied across two consecutive checks.",
+      "prior_state": "Earlier reading of the dock sensor: unmet.",
+      "observed_event": "Latest reading of the dock sensor: unmet.",
+      "lifecycle_state": "Commitment lifecycle: ACTIVE."
+    },
+    {
+      "case_id": "S0-008",
+      "structure_id": "P AND Q",
+      "truth_label": true,
+      "commitment": "the delivery agent is obligated to release the payload when the gate release is met and the manifest stamp is met.",
+      "trigger_condition": "Required conjunction: the gate release, the manifest stamp.",
+      "prior_state": "Earlier, both conditions were unresolved.",
+      "observed_event": "Current readings: the gate release is satisfied; the manifest stamp is satisfied.",
+      "lifecycle_state": "Commitment lifecycle: ACTIVE."
+    },
+    {
+      "case_id": "S0-009",
+      "structure_id": "P AND Q",
+      "truth_label": false,
+      "commitment": "the field unit is obligated to transmit the status packet when the network uplink is met and the encryption key is met.",
+      "trigger_condition": "Required conjunction: the network uplink, the encryption key.",
+      "prior_state": "Earlier, both conditions were unresolved.",
+      "observed_event": "Current readings: the network uplink is unmet; the encryption key is satisfied.",
+      "lifecycle_state": "Commitment lifecycle: ACTIVE."
+    },
+    {
+      "case_id": "S0-010",
+      "structure_id": "P AND Q",
+      "truth_label": false,
+      "commitment": "the control office will dispatch the maintenance crew only after both the alarm relay and the work order hold.",
+      "trigger_condition": "Both conditions must hold: the alarm relay, the work order.",
+      "prior_state": "Neither condition was resolved before the window.",
+      "observed_event": "Readings now: the alarm relay is unmet; the work order is unmet.",
+      "lifecycle_state": "Commitment lifecycle: ACTIVE."
+    },
+    {
+      "case_id": "S0-011",
+      "structure_id": "P AND Q",
+      "truth_label": false,
+      "commitment": "the delivery agent is obligated to release the payload when the gate release is met and the manifest stamp is met.",
+      "trigger_condition": "Required conjunction: the gate release, the manifest stamp.",
+      "prior_state": "Earlier, both conditions were unresolved.",
+      "observed_event": "Current readings: the gate release is satisfied; the manifest stamp is unmet.",
+      "lifecycle_state": "Commitment lifecycle: ACTIVE."
+    },
+    {
+      "case_id": "S0-012",
+      "structure_id": "P",
+      "truth_label": false,
+      "commitment": "A standing instruction commits the warehouse unit to restock the shelf whenever the dock sensor is satisfied.",
+      "trigger_condition": "Triggering condition: the dock sensor.",
+      "prior_state": "At the start of the window, the dock sensor was still pending.",
+      "observed_event": "State of the dock sensor this period: unmet.",
+      "lifecycle_state": "Commitment lifecycle: ACTIVE."
+    },
+    {
+      "case_id": "S0-013",
+      "structure_id": "ACTIVE AND P",
+      "truth_label": true,
+      "commitment": "the delivery agent will release the payload if the commitment is still active and the gate release is satisfied.",
+      "trigger_condition": "Condition for firing: lifecycle active and the gate release satisfied.",
+      "prior_state": "The commitment lifecycle was ACTIVE entering the window.",
+      "observed_event": "Observation now: the gate release is satisfied.",
+      "lifecycle_state": "Lifecycle is ACTIVE."
+    },
+    {
+      "case_id": "S0-014",
+      "structure_id": "T2(P)",
+      "truth_label": false,
+      "commitment": "the reactor module is to activate the cooling loop once the heat threshold is observed on two successive readings.",
+      "trigger_condition": "The condition has to persist across two consecutive checks: the heat threshold.",
+      "prior_state": "Window first reading: the heat threshold was unmet.",
+      "observed_event": "Window second reading: the heat threshold is unmet.",
+      "lifecycle_state": "Commitment lifecycle: ACTIVE."
+    },
+    {
+      "case_id": "S0-015",
+      "structure_id": "P AND NOT Q",
+      "truth_label": false,
+      "commitment": "the control office will dispatch the maintenance crew if the alarm relay is active while the work order stays inactive.",
+      "trigger_condition": "Required state: the alarm relay active, the work order inactive.",
+      "prior_state": "Earlier, the alarm relay was pending and the work order was cleared.",
+      "observed_event": "Observations now: the alarm relay is unmet; the work order is unmet.",
+      "lifecycle_state": "Commitment lifecycle: ACTIVE."
+    },
+    {
+      "case_id": "S0-016",
+      "structure_id": "P",
+      "truth_label": false,
+      "commitment": "A standing instruction commits the warehouse unit to restock the shelf whenever the dock sensor is satisfied.",
+      "trigger_condition": "Triggering condition: the dock sensor.",
+      "prior_state": "At the start of the window, the dock sensor was still pending.",
+      "observed_event": "State of the dock sensor this period: unmet.",
+      "lifecycle_state": "Commitment lifecycle: ACTIVE."
+    },
+    {
+      "case_id": "S0-017",
+      "structure_id": "T2(P)",
+      "truth_label": true,
+      "commitment": "the reactor module commits to activate the cooling loop after two consecutive observations of the heat threshold.",
+      "trigger_condition": "Persistence rule: the heat threshold must remain satisfied across two consecutive checks.",
+      "prior_state": "Earlier reading of the heat threshold: satisfied.",
+      "observed_event": "Latest reading of the heat threshold: satisfied.",
+      "lifecycle_state": "Commitment lifecycle: ACTIVE."
+    },
+    {
+      "case_id": "S0-018",
+      "structure_id": "P AND Q",
+      "truth_label": false,
+      "commitment": "the warehouse unit will restock the shelf only after both the dock sensor and the inventory log hold.",
+      "trigger_condition": "Both conditions must hold: the dock sensor, the inventory log.",
+      "prior_state": "Neither condition was resolved before the window.",
+      "observed_event": "Readings now: the dock sensor is unmet; the inventory log is unmet.",
+      "lifecycle_state": "Commitment lifecycle: ACTIVE."
+    },
+    {
+      "case_id": "S0-019",
+      "structure_id": "ACTIVE AND P",
+      "truth_label": false,
+      "commitment": "the process unit is planned to open the valve line while the commitment remains active and the line pressure holds.",
+      "trigger_condition": "Eligibility requires an active lifecycle and the line pressure.",
+      "prior_state": "Lifecycle at window start: ACTIVE.",
+      "observed_event": "Current reading of the line pressure: unmet.",
+      "lifecycle_state": "Lifecycle is ACTIVE."
+    },
+    {
+      "case_id": "S0-020",
+      "structure_id": "P AND NOT Q",
+      "truth_label": true,
+      "commitment": "the reactor module will activate the cooling loop if the heat threshold is active while the safety interlock stays inactive.",
+      "trigger_condition": "Required state: the heat threshold active, the safety interlock inactive.",
+      "prior_state": "Earlier, the heat threshold was pending and the safety interlock was cleared.",
+      "observed_event": "Observations now: the heat threshold is satisfied; the safety interlock is unmet.",
+      "lifecycle_state": "Commitment lifecycle: ACTIVE."
+    },
+    {
+      "case_id": "S0-021",
+      "structure_id": "T2(P)",
+      "truth_label": false,
+      "commitment": "the reactor module is to activate the cooling loop once the heat threshold is observed on two successive readings.",
+      "trigger_condition": "The condition has to persist across two consecutive checks: the heat threshold.",
+      "prior_state": "Window first reading: the heat threshold was unmet.",
+      "observed_event": "Window second reading: the heat threshold is unmet.",
+      "lifecycle_state": "Commitment lifecycle: ACTIVE."
+    },
+    {
+      "case_id": "S0-022",
+      "structure_id": "T2(P)",
+      "truth_label": true,
+      "commitment": "the field unit is to transmit the status packet once the network uplink is observed on two successive readings.",
+      "trigger_condition": "The condition has to persist across two consecutive checks: the network uplink.",
+      "prior_state": "Window first reading: the network uplink was satisfied.",
+      "observed_event": "Window second reading: the network uplink is satisfied.",
+      "lifecycle_state": "Commitment lifecycle: ACTIVE."
+    },
+    {
+      "case_id": "S0-023",
+      "structure_id": "T2(P)",
+      "truth_label": false,
+      "commitment": "the delivery agent is to release the payload once the gate release is observed on two successive readings.",
+      "trigger_condition": "The condition has to persist across two consecutive checks: the gate release.",
+      "prior_state": "Window first reading: the gate release was unmet.",
+      "observed_event": "Window second reading: the gate release is satisfied.",
+      "lifecycle_state": "Commitment lifecycle: ACTIVE."
+    },
+    {
+      "case_id": "S0-024",
+      "structure_id": "P",
+      "truth_label": true,
+      "commitment": "the delivery agent remains committed to release the payload once the gate release is observed.",
+      "trigger_condition": "The operative condition is: the gate release.",
+      "prior_state": "Before the observation window, the gate release had not yet been recorded.",
+      "observed_event": "Current reading: the gate release is satisfied.",
+      "lifecycle_state": "Commitment lifecycle: ACTIVE."
+    },
+    {
+      "case_id": "S0-025",
+      "structure_id": "ACTIVE AND P",
+      "truth_label": true,
+      "commitment": "the operations desk is planned to broadcast the advisory while the commitment remains active and the weather probe holds.",
+      "trigger_condition": "Eligibility requires an active lifecycle and the weather probe.",
+      "prior_state": "Lifecycle at window start: ACTIVE.",
+      "observed_event": "Current reading of the weather probe: satisfied.",
+      "lifecycle_state": "Lifecycle is ACTIVE."
+    },
+    {
+      "case_id": "S0-026",
+      "structure_id": "T2(P)",
+      "truth_label": false,
+      "commitment": "the control office is to dispatch the maintenance crew once the alarm relay is observed on two successive readings.",
+      "trigger_condition": "The condition has to persist across two consecutive checks: the alarm relay.",
+      "prior_state": "Window first reading: the alarm relay was satisfied.",
+      "observed_event": "Window second reading: the alarm relay is unmet.",
+      "lifecycle_state": "Commitment lifecycle: ACTIVE."
+    },
+    {
+      "case_id": "S0-027",
+      "structure_id": "P",
+      "truth_label": false,
+      "commitment": "the warehouse unit remains committed to restock the shelf once the dock sensor is observed.",
+      "trigger_condition": "The operative condition is: the dock sensor.",
+      "prior_state": "Before the observation window, the dock sensor had not yet been recorded.",
+      "observed_event": "Current reading: the dock sensor is unmet.",
+      "lifecycle_state": "Commitment lifecycle: ACTIVE."
+    },
+    {
+      "case_id": "S0-028",
+      "structure_id": "ACTIVE AND P",
+      "truth_label": false,
+      "commitment": "the field unit will transmit the status packet if the commitment is still active and the network uplink is satisfied.",
+      "trigger_condition": "Condition for firing: lifecycle active and the network uplink satisfied.",
+      "prior_state": "The commitment lifecycle was COMPLETED entering the window.",
+      "observed_event": "Observation now: the network uplink is unmet.",
+      "lifecycle_state": "Lifecycle is COMPLETED."
+    },
+    {
+      "case_id": "S0-029",
+      "structure_id": "P AND NOT Q",
+      "truth_label": true,
+      "commitment": "the control office will dispatch the maintenance crew if the alarm relay is active while the work order stays inactive.",
+      "trigger_condition": "Required state: the alarm relay active, the work order inactive.",
+      "prior_state": "Earlier, the alarm relay was pending and the work order was cleared.",
+      "observed_event": "Observations now: the alarm relay is satisfied; the work order is unmet.",
+      "lifecycle_state": "Commitment lifecycle: ACTIVE."
+    },
+    {
+      "case_id": "S0-030",
+      "structure_id": "ACTIVE AND P",
+      "truth_label": true,
+      "commitment": "the field unit is planned to transmit the status packet while the commitment remains active and the network uplink holds.",
+      "trigger_condition": "Eligibility requires an active lifecycle and the network uplink.",
+      "prior_state": "Lifecycle at window start: ACTIVE.",
+      "observed_event": "Current reading of the network uplink: satisfied.",
+      "lifecycle_state": "Lifecycle is ACTIVE."
+    },
+    {
+      "case_id": "S0-031",
+      "structure_id": "T2(P)",
+      "truth_label": true,
+      "commitment": "the field unit is to transmit the status packet once the network uplink is observed on two successive readings.",
+      "trigger_condition": "The condition has to persist across two consecutive checks: the network uplink.",
+      "prior_state": "Window first reading: the network uplink was satisfied.",
+      "observed_event": "Window second reading: the network uplink is satisfied.",
+      "lifecycle_state": "Commitment lifecycle: ACTIVE."
+    },
+    {
+      "case_id": "S0-032",
+      "structure_id": "P",
+      "truth_label": false,
+      "commitment": "the control office remains committed to dispatch the maintenance crew once the alarm relay is observed.",
+      "trigger_condition": "The operative condition is: the alarm relay.",
+      "prior_state": "Before the observation window, the alarm relay had not yet been recorded.",
+      "observed_event": "Current reading: the alarm relay is unmet.",
+      "lifecycle_state": "Commitment lifecycle: ACTIVE."
+    },
+    {
+      "case_id": "S0-033",
+      "structure_id": "P AND Q",
+      "truth_label": true,
+      "commitment": "the field unit will transmit the status packet only after both the network uplink and the encryption key hold.",
+      "trigger_condition": "Both conditions must hold: the network uplink, the encryption key.",
+      "prior_state": "Neither condition was resolved before the window.",
+      "observed_event": "Readings now: the network uplink is satisfied; the encryption key is satisfied.",
+      "lifecycle_state": "Commitment lifecycle: ACTIVE."
+    },
+    {
+      "case_id": "S0-034",
+      "structure_id": "P AND Q",
+      "truth_label": true,
+      "commitment": "the control office is obligated to dispatch the maintenance crew when the alarm relay is met and the work order is met.",
+      "trigger_condition": "Required conjunction: the alarm relay, the work order.",
+      "prior_state": "Earlier, both conditions were unresolved.",
+      "observed_event": "Current readings: the alarm relay is satisfied; the work order is satisfied.",
+      "lifecycle_state": "Commitment lifecycle: ACTIVE."
+    },
+    {
+      "case_id": "S0-035",
+      "structure_id": "P AND NOT Q",
+      "truth_label": true,
+      "commitment": "the reactor module is instructed to activate the cooling loop when the heat threshold holds and the safety interlock does not.",
+      "trigger_condition": "Triggering combination: the heat threshold present, the safety interlock absent.",
+      "prior_state": "The window began with the heat threshold unresolved and the safety interlock unobserved.",
+      "observed_event": "Current readings: the heat threshold is satisfied; the safety interlock is unmet.",
+      "lifecycle_state": "Commitment lifecycle: ACTIVE."
+    },
+    {
+      "case_id": "S0-036",
+      "structure_id": "ACTIVE AND P",
+      "truth_label": true,
+      "commitment": "the field unit is planned to transmit the status packet while the commitment remains active and the network uplink holds.",
+      "trigger_condition": "Eligibility requires an active lifecycle and the network uplink.",
+      "prior_state": "Lifecycle at window start: ACTIVE.",
+      "observed_event": "Current reading of the network uplink: satisfied.",
+      "lifecycle_state": "Lifecycle is ACTIVE."
+    },
+    {
+      "case_id": "S0-037",
+      "structure_id": "T2(P)",
+      "truth_label": true,
+      "commitment": "the field unit is to transmit the status packet once the network uplink is observed on two successive readings.",
+      "trigger_condition": "The condition has to persist across two consecutive checks: the network uplink.",
+      "prior_state": "Window first reading: the network uplink was satisfied.",
+      "observed_event": "Window second reading: the network uplink is satisfied.",
+      "lifecycle_state": "Commitment lifecycle: ACTIVE."
+    },
+    {
+      "case_id": "S0-038",
+      "structure_id": "P",
+      "truth_label": true,
+      "commitment": "the control office remains committed to dispatch the maintenance crew once the alarm relay is observed.",
+      "trigger_condition": "The operative condition is: the alarm relay.",
+      "prior_state": "Before the observation window, the alarm relay had not yet been recorded.",
+      "observed_event": "Current reading: the alarm relay is satisfied.",
+      "lifecycle_state": "Commitment lifecycle: ACTIVE."
+    },
+    {
+      "case_id": "S0-039",
+      "structure_id": "P",
+      "truth_label": false,
+      "commitment": "A standing instruction commits the warehouse unit to restock the shelf whenever the dock sensor is satisfied.",
+      "trigger_condition": "Triggering condition: the dock sensor.",
+      "prior_state": "At the start of the window, the dock sensor was still pending.",
+      "observed_event": "State of the dock sensor this period: unmet.",
+      "lifecycle_state": "Commitment lifecycle: ACTIVE."
+    },
+    {
+      "case_id": "S0-040",
+      "structure_id": "P AND Q",
+      "truth_label": false,
+      "commitment": "the control office is obligated to dispatch the maintenance crew when the alarm relay is met and the work order is met.",
+      "trigger_condition": "Required conjunction: the alarm relay, the work order.",
+      "prior_state": "Earlier, both conditions were unresolved.",
+      "observed_event": "Current readings: the alarm relay is unmet; the work order is satisfied.",
+      "lifecycle_state": "Commitment lifecycle: ACTIVE."
+    },
+    {
+      "case_id": "S0-041",
+      "structure_id": "ACTIVE AND P",
+      "truth_label": false,
+      "commitment": "the field unit will transmit the status packet if the commitment is still active and the network uplink is satisfied.",
+      "trigger_condition": "Condition for firing: lifecycle active and the network uplink satisfied.",
+      "prior_state": "The commitment lifecycle was COMPLETED entering the window.",
+      "observed_event": "Observation now: the network uplink is satisfied.",
+      "lifecycle_state": "Lifecycle is COMPLETED."
+    },
+    {
+      "case_id": "S0-042",
+      "structure_id": "P AND NOT Q",
+      "truth_label": false,
+      "commitment": "the reactor module will activate the cooling loop if the heat threshold is active while the safety interlock stays inactive.",
+      "trigger_condition": "Required state: the heat threshold active, the safety interlock inactive.",
+      "prior_state": "Earlier, the heat threshold was pending and the safety interlock was cleared.",
+      "observed_event": "Observations now: the heat threshold is satisfied; the safety interlock is satisfied.",
+      "lifecycle_state": "Commitment lifecycle: ACTIVE."
+    },
+    {
+      "case_id": "S0-043",
+      "structure_id": "ACTIVE AND P",
+      "truth_label": true,
+      "commitment": "the field unit is planned to transmit the status packet while the commitment remains active and the network uplink holds.",
+      "trigger_condition": "Eligibility requires an active lifecycle and the network uplink.",
+      "prior_state": "Lifecycle at window start: ACTIVE.",
+      "observed_event": "Current reading of the network uplink: satisfied.",
+      "lifecycle_state": "Lifecycle is ACTIVE."
+    },
+    {
+      "case_id": "S0-044",
+      "structure_id": "P AND NOT Q",
+      "truth_label": true,
+      "commitment": "the delivery agent is instructed to release the payload when the gate release holds and the manifest stamp does not.",
+      "trigger_condition": "Triggering combination: the gate release present, the manifest stamp absent.",
+      "prior_state": "The window began with the gate release unresolved and the manifest stamp unobserved.",
+      "observed_event": "Current readings: the gate release is satisfied; the manifest stamp is unmet.",
+      "lifecycle_state": "Commitment lifecycle: ACTIVE."
+    },
+    {
+      "case_id": "S0-045",
+      "structure_id": "P AND Q",
+      "truth_label": true,
+      "commitment": "the station will engage the backup supply only after both the primary feed and the reserve link hold.",
+      "trigger_condition": "Both conditions must hold: the primary feed, the reserve link.",
+      "prior_state": "Neither condition was resolved before the window.",
+      "observed_event": "Readings now: the primary feed is satisfied; the reserve link is satisfied.",
+      "lifecycle_state": "Commitment lifecycle: ACTIVE."
+    },
+    {
+      "case_id": "S0-046",
+      "structure_id": "P AND Q",
+      "truth_label": true,
+      "commitment": "the delivery agent will release the payload only after both the gate release and the manifest stamp hold.",
+      "trigger_condition": "Both conditions must hold: the gate release, the manifest stamp.",
+      "prior_state": "Neither condition was resolved before the window.",
+      "observed_event": "Readings now: the gate release is satisfied; the manifest stamp is satisfied.",
+      "lifecycle_state": "Commitment lifecycle: ACTIVE."
+    },
+    {
+      "case_id": "S0-047",
+      "structure_id": "P AND NOT Q",
+      "truth_label": true,
+      "commitment": "the delivery agent is instructed to release the payload when the gate release holds and the manifest stamp does not.",
+      "trigger_condition": "Triggering combination: the gate release present, the manifest stamp absent.",
+      "prior_state": "The window began with the gate release unresolved and the manifest stamp unobserved.",
+      "observed_event": "Current readings: the gate release is satisfied; the manifest stamp is unmet.",
+      "lifecycle_state": "Commitment lifecycle: ACTIVE."
+    },
+    {
+      "case_id": "S0-048",
+      "structure_id": "P AND Q",
+      "truth_label": true,
+      "commitment": "the process unit will open the valve line only after both the line pressure and the regulator seal hold.",
+      "trigger_condition": "Both conditions must hold: the line pressure, the regulator seal.",
+      "prior_state": "Neither condition was resolved before the window.",
+      "observed_event": "Readings now: the line pressure is satisfied; the regulator seal is satisfied.",
+      "lifecycle_state": "Commitment lifecycle: ACTIVE."
+    },
+    {
+      "case_id": "S0-049",
+      "structure_id": "P",
+      "truth_label": true,
+      "commitment": "the reactor module remains committed to activate the cooling loop once the heat threshold is observed.",
+      "trigger_condition": "The operative condition is: the heat threshold.",
+      "prior_state": "Before the observation window, the heat threshold had not yet been recorded.",
+      "observed_event": "Current reading: the heat threshold is satisfied.",
+      "lifecycle_state": "Commitment lifecycle: ACTIVE."
+    },
+    {
+      "case_id": "S0-050",
+      "structure_id": "P",
+      "truth_label": true,
+      "commitment": "A standing instruction commits the process unit to open the valve line whenever the line pressure is satisfied.",
+      "trigger_condition": "Triggering condition: the line pressure.",
+      "prior_state": "At the start of the window, the line pressure was still pending.",
+      "observed_event": "State of the line pressure this period: satisfied.",
+      "lifecycle_state": "Commitment lifecycle: ACTIVE."
+    },
+    {
+      "case_id": "S0-051",
+      "structure_id": "P AND NOT Q",
+      "truth_label": true,
+      "commitment": "the warehouse unit is instructed to restock the shelf when the dock sensor holds and the inventory log does not.",
+      "trigger_condition": "Triggering combination: the dock sensor present, the inventory log absent.",
+      "prior_state": "The window began with the dock sensor unresolved and the inventory log unobserved.",
+      "observed_event": "Current readings: the dock sensor is satisfied; the inventory log is unmet.",
+      "lifecycle_state": "Commitment lifecycle: ACTIVE."
+    },
+    {
+      "case_id": "S0-052",
+      "structure_id": "T2(P)",
+      "truth_label": true,
+      "commitment": "the process unit is to open the valve line once the line pressure is observed on two successive readings.",
+      "trigger_condition": "The condition has to persist across two consecutive checks: the line pressure.",
+      "prior_state": "Window first reading: the line pressure was satisfied.",
+      "observed_event": "Window second reading: the line pressure is satisfied.",
+      "lifecycle_state": "Commitment lifecycle: ACTIVE."
+    },
+    {
+      "case_id": "S0-053",
+      "structure_id": "P AND NOT Q",
+      "truth_label": false,
+      "commitment": "the warehouse unit will restock the shelf if the dock sensor is active while the inventory log stays inactive.",
+      "trigger_condition": "Required state: the dock sensor active, the inventory log inactive.",
+      "prior_state": "Earlier, the dock sensor was pending and the inventory log was cleared.",
+      "observed_event": "Observations now: the dock sensor is unmet; the inventory log is satisfied.",
+      "lifecycle_state": "Commitment lifecycle: ACTIVE."
+    },
+    {
+      "case_id": "S0-054",
+      "structure_id": "P AND NOT Q",
+      "truth_label": true,
+      "commitment": "the field unit is instructed to transmit the status packet when the network uplink holds and the encryption key does not.",
+      "trigger_condition": "Triggering combination: the network uplink present, the encryption key absent.",
+      "prior_state": "The window began with the network uplink unresolved and the encryption key unobserved.",
+      "observed_event": "Current readings: the network uplink is satisfied; the encryption key is unmet.",
+      "lifecycle_state": "Commitment lifecycle: ACTIVE."
+    },
+    {
+      "case_id": "S0-055",
+      "structure_id": "P",
+      "truth_label": true,
+      "commitment": "A standing instruction commits the control office to dispatch the maintenance crew whenever the alarm relay is satisfied.",
+      "trigger_condition": "Triggering condition: the alarm relay.",
+      "prior_state": "At the start of the window, the alarm relay was still pending.",
+      "observed_event": "State of the alarm relay this period: satisfied.",
+      "lifecycle_state": "Commitment lifecycle: ACTIVE."
+    },
+    {
+      "case_id": "S0-056",
+      "structure_id": "ACTIVE AND P",
+      "truth_label": false,
+      "commitment": "the warehouse unit is planned to restock the shelf while the commitment remains active and the dock sensor holds.",
+      "trigger_condition": "Eligibility requires an active lifecycle and the dock sensor.",
+      "prior_state": "Lifecycle at window start: COMPLETED.",
+      "observed_event": "Current reading of the dock sensor: unmet.",
+      "lifecycle_state": "Lifecycle is COMPLETED."
+    },
+    {
+      "case_id": "S0-057",
+      "structure_id": "P AND NOT Q",
+      "truth_label": false,
+      "commitment": "the warehouse unit is instructed to restock the shelf when the dock sensor holds and the inventory log does not.",
+      "trigger_condition": "Triggering combination: the dock sensor present, the inventory log absent.",
+      "prior_state": "The window began with the dock sensor unresolved and the inventory log unobserved.",
+      "observed_event": "Current readings: the dock sensor is unmet; the inventory log is satisfied.",
+      "lifecycle_state": "Commitment lifecycle: ACTIVE."
+    },
+    {
+      "case_id": "S0-058",
+      "structure_id": "P",
+      "truth_label": true,
+      "commitment": "the station remains committed to engage the backup supply once the primary feed is observed.",
+      "trigger_condition": "The operative condition is: the primary feed.",
+      "prior_state": "Before the observation window, the primary feed had not yet been recorded.",
+      "observed_event": "Current reading: the primary feed is satisfied.",
+      "lifecycle_state": "Commitment lifecycle: ACTIVE."
+    },
+    {
+      "case_id": "S0-059",
+      "structure_id": "P AND NOT Q",
+      "truth_label": false,
+      "commitment": "the station is instructed to engage the backup supply when the primary feed holds and the reserve link does not.",
+      "trigger_condition": "Triggering combination: the primary feed present, the reserve link absent.",
+      "prior_state": "The window began with the primary feed unresolved and the reserve link unobserved.",
+      "observed_event": "Current readings: the primary feed is unmet; the reserve link is satisfied.",
+      "lifecycle_state": "Commitment lifecycle: ACTIVE."
+    },
+    {
+      "case_id": "S0-060",
+      "structure_id": "T2(P)",
+      "truth_label": false,
+      "commitment": "the field unit is to transmit the status packet once the network uplink is observed on two successive readings.",
+      "trigger_condition": "The condition has to persist across two consecutive checks: the network uplink.",
+      "prior_state": "Window first reading: the network uplink was unmet.",
+      "observed_event": "Window second reading: the network uplink is satisfied.",
+      "lifecycle_state": "Commitment lifecycle: ACTIVE."
+    },
+    {
+      "case_id": "S0-061",
+      "structure_id": "P",
+      "truth_label": false,
+      "commitment": "A standing instruction commits the reactor module to activate the cooling loop whenever the heat threshold is satisfied.",
+      "trigger_condition": "Triggering condition: the heat threshold.",
+      "prior_state": "At the start of the window, the heat threshold was still pending.",
+      "observed_event": "State of the heat threshold this period: unmet.",
+      "lifecycle_state": "Commitment lifecycle: ACTIVE."
+    },
+    {
+      "case_id": "S0-062",
+      "structure_id": "ACTIVE AND P",
+      "truth_label": true,
+      "commitment": "the field unit is planned to transmit the status packet while the commitment remains active and the network uplink holds.",
+      "trigger_condition": "Eligibility requires an active lifecycle and the network uplink.",
+      "prior_state": "Lifecycle at window start: ACTIVE.",
+      "observed_event": "Current reading of the network uplink: satisfied.",
+      "lifecycle_state": "Lifecycle is ACTIVE."
+    },
+    {
+      "case_id": "S0-063",
+      "structure_id": "P AND Q",
+      "truth_label": false,
+      "commitment": "the operations desk is obligated to broadcast the advisory when the weather probe is met and the local radar is met.",
+      "trigger_condition": "Required conjunction: the weather probe, the local radar.",
+      "prior_state": "Earlier, both conditions were unresolved.",
+      "observed_event": "Current readings: the weather probe is unmet; the local radar is satisfied.",
+      "lifecycle_state": "Commitment lifecycle: ACTIVE."
+    },
+    {
+      "case_id": "S0-064",
+      "structure_id": "ACTIVE AND P",
+      "truth_label": true,
+      "commitment": "the process unit is planned to open the valve line while the commitment remains active and the line pressure holds.",
+      "trigger_condition": "Eligibility requires an active lifecycle and the line pressure.",
+      "prior_state": "Lifecycle at window start: ACTIVE.",
+      "observed_event": "Current reading of the line pressure: satisfied.",
+      "lifecycle_state": "Lifecycle is ACTIVE."
+    },
+    {
+      "case_id": "S0-065",
+      "structure_id": "T2(P)",
+      "truth_label": false,
+      "commitment": "the reactor module commits to activate the cooling loop after two consecutive observations of the heat threshold.",
+      "trigger_condition": "Persistence rule: the heat threshold must remain satisfied across two consecutive checks.",
+      "prior_state": "Earlier reading of the heat threshold: satisfied.",
+      "observed_event": "Latest reading of the heat threshold: unmet.",
+      "lifecycle_state": "Commitment lifecycle: ACTIVE."
+    },
+    {
+      "case_id": "S0-066",
+      "structure_id": "P AND Q",
+      "truth_label": false,
+      "commitment": "the operations desk will broadcast the advisory only after both the weather probe and the local radar hold.",
+      "trigger_condition": "Both conditions must hold: the weather probe, the local radar.",
+      "prior_state": "Neither condition was resolved before the window.",
+      "observed_event": "Readings now: the weather probe is satisfied; the local radar is unmet.",
+      "lifecycle_state": "Commitment lifecycle: ACTIVE."
+    },
+    {
+      "case_id": "S0-067",
+      "structure_id": "T2(P)",
+      "truth_label": true,
+      "commitment": "the process unit commits to open the valve line after two consecutive observations of the line pressure.",
+      "trigger_condition": "Persistence rule: the line pressure must remain satisfied across two consecutive checks.",
+      "prior_state": "Earlier reading of the line pressure: satisfied.",
+      "observed_event": "Latest reading of the line pressure: satisfied.",
+      "lifecycle_state": "Commitment lifecycle: ACTIVE."
+    },
+    {
+      "case_id": "S0-068",
+      "structure_id": "P AND Q",
+      "truth_label": false,
+      "commitment": "the process unit is obligated to open the valve line when the line pressure is met and the regulator seal is met.",
+      "trigger_condition": "Required conjunction: the line pressure, the regulator seal.",
+      "prior_state": "Earlier, both conditions were unresolved.",
+      "observed_event": "Current readings: the line pressure is satisfied; the regulator seal is unmet.",
+      "lifecycle_state": "Commitment lifecycle: ACTIVE."
+    },
+    {
+      "case_id": "S0-069",
+      "structure_id": "T2(P)",
+      "truth_label": false,
+      "commitment": "the reactor module is to activate the cooling loop once the heat threshold is observed on two successive readings.",
+      "trigger_condition": "The condition has to persist across two consecutive checks: the heat threshold.",
+      "prior_state": "Window first reading: the heat threshold was satisfied.",
+      "observed_event": "Window second reading: the heat threshold is unmet.",
+      "lifecycle_state": "Commitment lifecycle: ACTIVE."
+    },
+    {
+      "case_id": "S0-070",
+      "structure_id": "T2(P)",
+      "truth_label": true,
+      "commitment": "the warehouse unit commits to restock the shelf after two consecutive observations of the dock sensor.",
+      "trigger_condition": "Persistence rule: the dock sensor must remain satisfied across two consecutive checks.",
+      "prior_state": "Earlier reading of the dock sensor: satisfied.",
+      "observed_event": "Latest reading of the dock sensor: satisfied.",
+      "lifecycle_state": "Commitment lifecycle: ACTIVE."
+    },
+    {
+      "case_id": "S0-071",
+      "structure_id": "P",
+      "truth_label": false,
+      "commitment": "A standing instruction commits the station to engage the backup supply whenever the primary feed is satisfied.",
+      "trigger_condition": "Triggering condition: the primary feed.",
+      "prior_state": "At the start of the window, the primary feed was still pending.",
+      "observed_event": "State of the primary feed this period: unmet.",
+      "lifecycle_state": "Commitment lifecycle: ACTIVE."
+    },
+    {
+      "case_id": "S0-072",
+      "structure_id": "P",
+      "truth_label": true,
+      "commitment": "A standing instruction commits the field unit to transmit the status packet whenever the network uplink is satisfied.",
+      "trigger_condition": "Triggering condition: the network uplink.",
+      "prior_state": "At the start of the window, the network uplink was still pending.",
+      "observed_event": "State of the network uplink this period: satisfied.",
+      "lifecycle_state": "Commitment lifecycle: ACTIVE."
+    },
+    {
+      "case_id": "S0-073",
+      "structure_id": "P AND Q",
+      "truth_label": true,
+      "commitment": "the process unit is obligated to open the valve line when the line pressure is met and the regulator seal is met.",
+      "trigger_condition": "Required conjunction: the line pressure, the regulator seal.",
+      "prior_state": "Earlier, both conditions were unresolved.",
+      "observed_event": "Current readings: the line pressure is satisfied; the regulator seal is satisfied.",
+      "lifecycle_state": "Commitment lifecycle: ACTIVE."
+    },
+    {
+      "case_id": "S0-074",
+      "structure_id": "P AND NOT Q",
+      "truth_label": true,
+      "commitment": "the warehouse unit is instructed to restock the shelf when the dock sensor holds and the inventory log does not.",
+      "trigger_condition": "Triggering combination: the dock sensor present, the inventory log absent.",
+      "prior_state": "The window began with the dock sensor unresolved and the inventory log unobserved.",
+      "observed_event": "Current readings: the dock sensor is satisfied; the inventory log is unmet.",
+      "lifecycle_state": "Commitment lifecycle: ACTIVE."
+    },
+    {
+      "case_id": "S0-075",
+      "structure_id": "P",
+      "truth_label": true,
+      "commitment": "A standing instruction commits the control office to dispatch the maintenance crew whenever the alarm relay is satisfied.",
+      "trigger_condition": "Triggering condition: the alarm relay.",
+      "prior_state": "At the start of the window, the alarm relay was still pending.",
+      "observed_event": "State of the alarm relay this period: satisfied.",
+      "lifecycle_state": "Commitment lifecycle: ACTIVE."
+    },
+    {
+      "case_id": "S0-076",
+      "structure_id": "ACTIVE AND P",
+      "truth_label": false,
+      "commitment": "the station will engage the backup supply if the commitment is still active and the primary feed is satisfied.",
+      "trigger_condition": "Condition for firing: lifecycle active and the primary feed satisfied.",
+      "prior_state": "The commitment lifecycle was CANCELLED entering the window.",
+      "observed_event": "Observation now: the primary feed is satisfied.",
+      "lifecycle_state": "Lifecycle is CANCELLED."
+    },
+    {
+      "case_id": "S0-077",
+      "structure_id": "P AND NOT Q",
+      "truth_label": false,
+      "commitment": "the warehouse unit will restock the shelf if the dock sensor is active while the inventory log stays inactive.",
+      "trigger_condition": "Required state: the dock sensor active, the inventory log inactive.",
+      "prior_state": "Earlier, the dock sensor was pending and the inventory log was cleared.",
+      "observed_event": "Observations now: the dock sensor is unmet; the inventory log is unmet.",
+      "lifecycle_state": "Commitment lifecycle: ACTIVE."
+    },
+    {
+      "case_id": "S0-078",
+      "structure_id": "P AND Q",
+      "truth_label": true,
+      "commitment": "the station is obligated to engage the backup supply when the primary feed is met and the reserve link is met.",
+      "trigger_condition": "Required conjunction: the primary feed, the reserve link.",
+      "prior_state": "Earlier, both conditions were unresolved.",
+      "observed_event": "Current readings: the primary feed is satisfied; the reserve link is satisfied.",
+      "lifecycle_state": "Commitment lifecycle: ACTIVE."
+    },
+    {
+      "case_id": "S0-079",
+      "structure_id": "ACTIVE AND P",
+      "truth_label": false,
+      "commitment": "the field unit will transmit the status packet if the commitment is still active and the network uplink is satisfied.",
+      "trigger_condition": "Condition for firing: lifecycle active and the network uplink satisfied.",
+      "prior_state": "The commitment lifecycle was COMPLETED entering the window.",
+      "observed_event": "Observation now: the network uplink is satisfied.",
+      "lifecycle_state": "Lifecycle is COMPLETED."
+    },
+    {
+      "case_id": "S0-080",
+      "structure_id": "P",
+      "truth_label": false,
+      "commitment": "A standing instruction commits the delivery agent to release the payload whenever the gate release is satisfied.",
+      "trigger_condition": "Triggering condition: the gate release.",
+      "prior_state": "At the start of the window, the gate release was still pending.",
+      "observed_event": "State of the gate release this period: unmet.",
+      "lifecycle_state": "Commitment lifecycle: ACTIVE."
+    }
+  ]
+}

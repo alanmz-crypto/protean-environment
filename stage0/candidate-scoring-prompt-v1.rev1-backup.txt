@@ -1,0 +1,20 @@
+You maintain a record of a commitment made by an agent.
+
+COMMITMENT:
+{commitment}
+
+TRIGGER CONDITION:
+{trigger_condition}
+
+PRIOR STATE:
+{prior_state}
+
+OBSERVED EVENT:
+{observed_event}
+
+LIFECYCLE STATE:
+{lifecycle_state}
+
+The questioned commitment is one of the events described above. Based only on the stated commitment, trigger condition, prior state, observed event, and lifecycle state, estimate the likelihood that this commitment is eligible to fire now (given the observed current state and lifecycle status).
+
+Respond with a single plain decimal from 0.00 to 1.00 that expresses this eligibility, where 0.00 means certainly not eligible and 1.00 means certainly eligible. Output nothing other than that single decimal value.

@@ -1,0 +1,96 @@
+{
+  "version_id": "stage0-template-bank-v1",
+  "authorship_source": "deepseek-v4-flash / Protean Stage 0 freeze-prep, authored from §3.4 micro-world semantics before any generated truth labels were inspected (Cursor-rendering repair: paired natural status realizations)",
+  "slots": [
+    {"action": "restock the shelf", "subject": "the warehouse unit", "p_condition": "the dock sensor", "q_condition": "the inventory log"},
+    {"action": "transmit the status packet", "subject": "the field unit", "p_condition": "the network uplink", "q_condition": "the encryption key"},
+    {"action": "activate the cooling loop", "subject": "the reactor module", "p_condition": "the heat threshold", "q_condition": "the safety interlock"},
+    {"action": "release the payload", "subject": "the delivery agent", "p_condition": "the gate release", "q_condition": "the manifest stamp"},
+    {"action": "open the valve line", "subject": "the process unit", "p_condition": "the line pressure", "q_condition": "the regulator seal"},
+    {"action": "engage the backup supply", "subject": "the station", "p_condition": "the primary feed", "q_condition": "the reserve link"},
+    {"action": "dispatch the maintenance crew", "subject": "the control office", "p_condition": "the alarm relay", "q_condition": "the work order"},
+    {"action": "broadcast the advisory", "subject": "the operations desk", "p_condition": "the weather probe", "q_condition": "the local radar"}
+  ],
+  "templates": {
+    "P": [
+      {
+        "commitment": "{subject} remains committed to {action} once {p_condition} is observed.",
+        "trigger_condition": "The operative condition is: {p_condition}.",
+        "prior_state": "Before the observation window, {p_condition} had not yet been recorded.",
+        "observed_event": "Current reading: {p_condition} is {p_now}.",
+        "lifecycle_state": "Commitment lifecycle: ACTIVE."
+      },
+      {
+        "commitment": "A standing instruction commits {subject} to {action} whenever {p_condition} is satisfied.",
+        "trigger_condition": "Triggering condition: {p_condition}.",
+        "prior_state": "At the start of the window, {p_condition} was still pending.",
+        "observed_event": "State of {p_condition} this period: {p_now}.",
+        "lifecycle_state": "Commitment lifecycle: ACTIVE."
+      }
+    ],
+    "P AND Q": [
+      {
+        "commitment": "{subject} will {action} only after both {p_condition} and {q_condition} hold.",
+        "trigger_condition": "Both conditions must hold: {p_condition}, {q_condition}.",
+        "prior_state": "Neither condition was resolved before the window.",
+        "observed_event": "Readings now: {p_condition} is {p_now}; {q_condition} is {q_now}.",
+        "lifecycle_state": "Commitment lifecycle: ACTIVE."
+      },
+      {
+        "commitment": "{subject} is obligated to {action} when {p_condition} is met and {q_condition} is met.",
+        "trigger_condition": "Required conjunction: {p_condition}, {q_condition}.",
+        "prior_state": "Earlier, both conditions were unresolved.",
+        "observed_event": "Current readings: {p_condition} is {p_now}; {q_condition} is {q_now}.",
+        "lifecycle_state": "Commitment lifecycle: ACTIVE."
+      }
+    ],
+    "P AND NOT Q": [
+      {
+        "commitment": "{subject} is instructed to {action} when {p_condition} holds and {q_condition} does not.",
+        "trigger_condition": "Triggering combination: {p_condition} present, {q_condition} absent.",
+        "prior_state": "The window began with {p_condition} unresolved and {q_condition} unobserved.",
+        "observed_event": "Current readings: {p_condition} is {p_now}; {q_condition} is {q_now}.",
+        "lifecycle_state": "Commitment lifecycle: ACTIVE."
+      },
+      {
+        "commitment": "{subject} will {action} if {p_condition} is active while {q_condition} stays inactive.",
+        "trigger_condition": "Required state: {p_condition} active, {q_condition} inactive.",
+        "prior_state": "Earlier, {p_condition} was pending and {q_condition} was cleared.",
+        "observed_event": "Observations now: {p_condition} is {p_now}; {q_condition} is {q_now}.",
+        "lifecycle_state": "Commitment lifecycle: ACTIVE."
+      }
+    ],
+    "T2(P)": [
+      {
+        "commitment": "{subject} is to {action} once {p_condition} is observed on two successive readings.",
+        "trigger_condition": "The condition has to persist across two consecutive checks: {p_condition}.",
+        "prior_state": "Window first reading: {p_condition} was {p_previous}.",
+        "observed_event": "Window second reading: {p_condition} is {p_now}.",
+        "lifecycle_state": "Commitment lifecycle: ACTIVE."
+      },
+      {
+        "commitment": "{subject} commits to {action} after two consecutive observations of {p_condition}.",
+        "trigger_condition": "Persistence rule: {p_condition} must remain satisfied across two consecutive checks.",
+        "prior_state": "Earlier reading of {p_condition}: {p_previous}.",
+        "observed_event": "Latest reading of {p_condition}: {p_now}.",
+        "lifecycle_state": "Commitment lifecycle: ACTIVE."
+      }
+    ],
+    "ACTIVE AND P": [
+      {
+        "commitment": "{subject} is planned to {action} while the commitment remains active and {p_condition} holds.",
+        "trigger_condition": "Eligibility requires an active lifecycle and {p_condition}.",
+        "prior_state": "Lifecycle at window start: {lifecycle}.",
+        "observed_event": "Current reading of {p_condition}: {p_now}.",
+        "lifecycle_state": "Lifecycle is {lifecycle}."
+      },
+      {
+        "commitment": "{subject} will {action} if the commitment is still active and {p_condition} is satisfied.",
+        "trigger_condition": "Condition for firing: lifecycle active and {p_condition} satisfied.",
+        "prior_state": "The commitment lifecycle was {lifecycle} entering the window.",
+        "observed_event": "Observation now: {p_condition} is {p_now}.",
+        "lifecycle_state": "Lifecycle is {lifecycle}."
+      }
+    ]
+  }
+}
