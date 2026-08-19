@@ -25,7 +25,7 @@ COPY --from=crush-build /out/crush /usr/local/bin/crush
 RUN <<EOF
 set -eu
 apt-get update -qq
-apt-get install -y -qq curl ca-certificates >/dev/null
+apt-get install -y -qq curl ca-certificates python3 python3-pytest python3-venv mypy >/dev/null
 curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
   -o /usr/share/keyrings/githubcli-archive-keyring.gpg
 echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
@@ -33,6 +33,11 @@ echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githu
 apt-get update -qq
 apt-get install -y -qq gh >/dev/null
 EOF
+
+# Pinned formatting/lint tool for reproducible Stage 0 verification.
+RUN python3 -m venv /opt/protean-tools \
+    && /opt/protean-tools/bin/pip install --no-cache-dir ruff==0.12.8 \
+    && ln -s /opt/protean-tools/bin/ruff /usr/local/bin/ruff
 
 # Container-only minimal Crush configuration for the devcontainer runtime user.
 # The remote user (vscode) has an isolated HOME that is never mounted from the

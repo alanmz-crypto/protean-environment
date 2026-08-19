@@ -28,3 +28,24 @@ Research protocol
 → Replication
 → Architecture inference only if evidence warrants it
 ```
+
+## Stage 0 mechanical substrate
+
+The `protean_stage0` Python package implements the authorized mechanical
+substrate for Stage 0. It includes the frozen familiar grammar, deterministic
+in-memory case generation, independently authored truth evaluators, template and
+hash machinery, pre-run validation, an injected single-decision model-client
+interface, raw results, DeLong analysis, and the PASS/STOP gate.
+
+It does **not** contain or authorize:
+
+- an experimental case-set artifact;
+- a final scoring prompt;
+- an experimental provider, model, or configuration;
+- a provider implementation or experimental model call.
+
+Run all mechanical verification from the repository root inside the devcontainer:
+
+```sh
+scripts/verify-stage0.sh
+```

@@ -1,0 +1,10 @@
+{
+  "evaluator_name": "Stage 0 primary deterministic truth evaluator",
+  "author": "Codex primary implementation author",
+  "authored_at": "2026-08-19T09:58:34Z",
+  "grammar_version": "prospective-control-v1.0/stage0-familiar-v1",
+  "grammar_sha256": "b435851e3473f4c2b760f79e960d365ec10444700845d6542d08e1c66882500d",
+  "independently_derived": true,
+  "independent_derivation_affirmation": "Authored directly from the frozen grammar before the isolated reference implementation was inspected.",
+  "implementation_sha256": "574d16b37d4301f9a338b02de395afacff11f1680f6a92980d9f4c5ce86b3f42"
+}
