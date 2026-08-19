@@ -1,7 +1,7 @@
 # Scripts
 
-No experiment scripts currently exist, and no harness is implemented during
-bootstrap.
+`verify-stage0.sh` runs the mechanical test, type, lint, formatting, syntax, and
+whitespace checks inside the Protean devcontainer.
 
-Implementation begins only after the Stage 0 execution plan is separately
-authorized.
+It does not generate cases, construct experimental artifacts, select a model,
+or make a provider call.

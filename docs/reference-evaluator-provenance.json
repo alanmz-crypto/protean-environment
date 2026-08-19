@@ -1,0 +1,25 @@
+{
+  "evaluator_name": "Stage 0 independent reference truth evaluator",
+  "author": "Codex isolated reference author",
+  "authored_at": "2026-08-19T09:33:19Z",
+  "grammar_version": "prospective-control-v1.0/stage0-familiar-v1",
+  "grammar_sha256": "b435851e3473f4c2b760f79e960d365ec10444700845d6542d08e1c66882500d",
+  "independently_derived": true,
+  "independent_derivation_affirmation": "Derived independently and exclusively from the frozen declarative grammar and its input schema, without consulting any primary or primary-derived evaluator artifacts.",
+  "allowed_inputs": [
+    "src/protean_stage0/grammar.py",
+    "src/protean_stage0/schema.py",
+    "pyproject.toml",
+    "docs/PROTOCOL-prospective-control-v1.0.md (only if essential; not accessed)"
+  ],
+  "prohibited_inputs": [
+    "primary evaluator",
+    "generator",
+    "primary tests",
+    "primary-derived fixtures",
+    "expected outputs",
+    "snapshots",
+    "truth results"
+  ],
+  "implementation_sha256": "3e69c602e2b17edd971fb93ade8d5861d694a2a9452f1ca1c239bedd53622e1e"
+}
