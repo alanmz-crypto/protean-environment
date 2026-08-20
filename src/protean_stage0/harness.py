@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -10,12 +11,20 @@ from typing import Any, Protocol
 from .artifacts import canonical_json_bytes, sha256_bytes
 from .manifest import ModelConfiguration
 from .parse_contract import PLAIN_DECIMAL_V1_SHA256, parse_plain_decimal_v1
+from .provider_failure import (
+    HttpFailure,
+    ModelFormattingFailure,
+    classify_provider_failure,
+)
+from .provider_failure import (
+    ProviderFailure as ProviderFailure,
+)
 from .results import CallLoopResult, ParseStatus, RawResult, Stage0Decision
 from .validation import ValidatedRun
 
-
-class ProviderFailure(RuntimeError):
-    pass
+# ProviderFailure is imported here and re-exported so adapters and tests can
+# keep importing it from .harness (the shared adapter-facing module).
+__all__ = ["ProviderFailure", "ModelRequest", "ModelResponse", "ModelClient"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -72,23 +81,49 @@ def run_single_decision_loop(
         timestamp = datetime.now(UTC).isoformat()
         try:
             response = client.make_single_decision(request)
-        except ProviderFailure:
+        except Exception as exc:  # bind any client exception; fail closed on it
+            category, failure_metadata = classify_provider_failure(exc)
+            # A model-formatting failure means the model produced unusable
+            # output; it must never collapse into a generic provider/API failure.
+            formatted = isinstance(exc, ModelFormattingFailure)
+            http_status = exc.evidence.status_code if isinstance(exc, HttpFailure) else None
+            raw_provider = getattr(exc, "raw_response", None)
             results.append(
                 RawResult(
                     run_id=manifest.run_id,
                     case_id=case.case_id,
                     truth_label=case.truth_label,
                     returned_score=None,
-                    raw_model_response=None,
+                    raw_model_response=raw_provider,
                     model_provider=model.provider,
                     model_id=model.model_id,
                     model_configuration_sha256=model.sha256,
-                    provider_metadata=None,
+                    provider_metadata=failure_metadata,
                     timestamp=timestamp,
                     call_order=call_order,
-                    parse_status=ParseStatus.PROVIDER_API_FAILURE,
+                    parse_status=(
+                        ParseStatus.MODEL_FORMATTING_FAILURE
+                        if formatted
+                        else ParseStatus.PROVIDER_API_FAILURE
+                    ),
+                    provider_failure_category=category,
+                    provider_http_status=http_status,
+                    provider_response_sha256=(
+                        sha256_bytes(raw_provider) if raw_provider is not None else None
+                    ),
+                    provider_raw_b64=(
+                        base64.b64encode(raw_provider).decode("ascii")
+                        if raw_provider is not None
+                        else None
+                    ),
                 )
             )
+            if formatted:
+                return CallLoopResult(
+                    tuple(results),
+                    Stage0Decision.STOP,
+                    "model formatting failure; no restart authorized",
+                )
             return CallLoopResult(tuple(results), Stage0Decision.STOP, "provider/API failure")
 
         score = parse_plain_decimal_v1(response.raw_response)
