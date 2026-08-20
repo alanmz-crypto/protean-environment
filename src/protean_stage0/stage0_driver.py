@@ -30,7 +30,7 @@ from .grammar import StructureId
 from .manifest import ExperimentalBindings, RunManifest
 from .parse_contract import PLAIN_DECIMAL_V1_SHA256
 from .results import RawResult, freeze_raw_results
-from .schema import LifecycleState, Stage0Case, StructuredCaseSpec
+from .schema import EvaluatorProvenance, LifecycleState, Stage0Case, StructuredCaseSpec
 from .validation import (
     TruthAgreementReport,
     load_evaluator_provenance,
