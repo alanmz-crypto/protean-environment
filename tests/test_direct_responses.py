@@ -1,11 +1,11 @@
-"""Tests for the direct OpenAI Responses API Stage-0 adapter (Luna xHigh).
+"""Tests for the direct OpenAI Responses API Stage-0 adapter (fail-closed contract).
 
-Uses a fake transport returning synthetic protocol-faithful Responses payloads —
-NO live OpenAI model call.
+Uses protocol-faithful fake fixtures — NO live OpenAI model call.
 """
 
 from __future__ import annotations
 
+import base64
 import json
 import os
 from collections.abc import Mapping
@@ -13,28 +13,35 @@ from typing import Any
 
 import pytest
 
-from protean_stage0.direct_responses import (
-    MAX_OUTPUT_TOKENS,
+from protean_stage0.direct_config import (
+    DIRECT_CONFIG_HASH,
     MODEL,
     REASONING_CONTEXT,
     REASONING_EFFORT,
-    RESPONSES_ENDPOINT,
+    direct_model_configuration,
+)
+from protean_stage0.direct_responses import (
     DirectResponsesClient,
     ResponsesProviderFailure,
     TransportResult,
     build_request_body,
     parse_scoring_response,
-    request_config_hash,
 )
 from protean_stage0.harness import ModelRequest, ModelResponse
+from protean_stage0.results import ParseStatus, RawResult, freeze_raw_results
 
 
-def msg(text: str) -> dict[str, Any]:
+def msg(text: str = "0.73") -> dict[str, Any]:
     return {
         "type": "message",
         "role": "assistant",
+        "status": "completed",
         "content": [{"type": "output_text", "text": text}],
     }
+
+
+def reasoning_item() -> dict[str, Any]:
+    return {"type": "reasoning", "summary": []}
 
 
 def valid_response(text: str = "0.73") -> dict[str, Any]:
@@ -44,10 +51,8 @@ def valid_response(text: str = "0.73") -> dict[str, Any]:
         "created_at": 1700000000,
         "status": "completed",
         "model": MODEL,
-        "output": [
-            {"type": "reasoning", "summary": []},
-            msg(text),
-        ],
+        "reasoning": {"effort": REASONING_EFFORT, "context": REASONING_CONTEXT},
+        "output": [reasoning_item(), msg(text)],
         "usage": {
             "input_tokens": 60,
             "output_tokens": 120,
@@ -58,20 +63,16 @@ def valid_response(text: str = "0.73") -> dict[str, Any]:
 
 
 class FakeTransport:
-    def __init__(self, result: TransportResult, calls: list[dict[str, Any]] | None = None) -> None:
+    def __init__(self, result: TransportResult) -> None:
         self.result = result
-        self.calls = calls if calls is not None else []
         self.attempts = 0
+        self.last_body: dict[str, Any] | None = None
 
     def __call__(
-        self,
-        *,
-        body: Mapping[str, Any],
-        api_key: str,
-        timeout_seconds: int,
+        self, *, body: Mapping[str, Any], api_key: str, timeout_seconds: int
     ) -> TransportResult:
         self.attempts += 1
-        self.calls.append({"body": dict(body), "api_key": api_key, "timeout": timeout_seconds})
+        self.last_body = dict(body)
         return self.result
 
 
@@ -81,181 +82,329 @@ def make_client(transport: Any) -> DirectResponsesClient:
     )
 
 
-def make_request() -> ModelRequest:
+def _frozen_request(ml: Any = "unused") -> ModelRequest:
     return ModelRequest(
         scoring_prompt=b"COMMITMENT:{commitment}",
         model_visible_payload={"commitment": "the dock sensor is satisfied"},
-        model_configuration="unused",  # type: ignore[arg-type]
+        model_configuration=direct_model_configuration(),  # real authoritative config
         case_id="S0-000",
     )
 
 
-def test_valid_completed_response_accepted(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("TEST_RESPONSES_KEY", "sk-xyz")
-    t = FakeTransport(TransportResult(200, json.dumps(valid_response()).encode()))
-    client = make_client(t)
-    resp = client.make_single_decision(make_request())
-    assert isinstance(resp, ModelResponse)
-    assert resp.raw_response == b"0.73"
-    assert t.attempts == 1  # exactly one request
-    md = resp.provider_metadata
-    assert md["response_id"] == "resp_abc"
-    assert md["returned_model"] == MODEL
-    assert md["reasoning_tokens"] == 90
+def _env_key() -> None:
+    os.environ["TEST_RESPONSES_KEY"] = "sk-xyz"
 
 
-def test_single_httphit_no_retry_attempts() -> None:
-    # transport records attempts; valid response => exactly 1
-    t = FakeTransport(TransportResult(200, json.dumps(valid_response()).encode()))
-    client = make_client(t)
-    os.environ["TEST_RESPONSES_KEY"] = "k"
+def _clear_key() -> None:
+    os.environ.pop("TEST_RESPONSES_KEY", None)
+
+
+# ---- accepted path ----
+def test_valid_completed_response_accepted() -> None:
+    _env_key()
     try:
-        client.make_single_decision(make_request())
+        t = FakeTransport(TransportResult(200, json.dumps(valid_response()).encode()))
+        resp = make_client(t).make_single_decision(_frozen_request())
+        assert isinstance(resp, ModelResponse)
+        assert resp.raw_response == b"0.73"
+        assert t.attempts == 1
+        md = resp.provider_metadata
+        assert md["response_id"] == "resp_abc"
+        assert md["returned_model"] == MODEL
+        assert md["reasoning_tokens"] == 90
+        assert md["effective_reasoning_context"] == REASONING_CONTEXT
+        assert len(md["raw_provider_b64"]) > 0
     finally:
-        del os.environ["TEST_RESPONSES_KEY"]
-    assert t.attempts == 1
+        _clear_key()
+
+
+def test_single_attempt_no_retry_on_success() -> None:
+    _env_key()
+    try:
+        t = FakeTransport(TransportResult(200, json.dumps(valid_response()).encode()))
+        make_client(t).make_single_decision(_frozen_request())
+        assert t.attempts == 1
+    finally:
+        _clear_key()
 
 
 def test_missing_api_key_stops() -> None:
+    _clear_key()
+    t = FakeTransport(TransportResult(200, json.dumps(valid_response()).encode()))
+    with pytest.raises(ResponsesProviderFailure, match="missing"):
+        make_client(t).make_single_decision(_frozen_request())
+
+
+# ---- Task 1 fail-closed on effective response ----
+def mutate(base: dict[str, Any], **kw: Any) -> dict[str, Any]:
+    d = json.loads(json.dumps(base))
+    d.update(kw)
+    return dict(d)
+
+
+def test_unknown_status_stops() -> None:
+    for st in ("", "in_progress", "queued"):
+        with pytest.raises(ResponsesProviderFailure, match="status"):
+            parse_scoring_response(json.dumps(mutate(valid_response(), status=st)).encode())
+
+
+def test_failed_incomplete_status_stops() -> None:
+    for st in ("failed", "cancelled", "incomplete"):
+        with pytest.raises(ResponsesProviderFailure, match="status"):
+            parse_scoring_response(json.dumps(mutate(valid_response(), status=st)).encode())
+
+
+def test_wrong_object_stops() -> None:
+    with pytest.raises(ResponsesProviderFailure, match="object"):
+        parse_scoring_response(json.dumps(mutate(valid_response(), object="wrong")).encode())
+
+
+def test_returned_wrong_model_stops() -> None:
+    # previously this was "observable"; now it must STOP.
+    with pytest.raises(ResponsesProviderFailure, match="returned model"):
+        parse_scoring_response(json.dumps(mutate(valid_response(), model="gpt-5.6-sol")).encode())
+
+
+def test_wrong_missing_reasoning_context_stops() -> None:
+    r = mutate(valid_response(), reasoning={"effort": REASONING_EFFORT, "context": "all_turns"})
+    with pytest.raises(ResponsesProviderFailure, match="context"):
+        parse_scoring_response(json.dumps(r).encode())
+    r2 = mutate(valid_response(), reasoning=None)
+    # context absent is acceptable; if returned it must match.
+    parsed = parse_scoring_response(json.dumps(r2).encode())
+    assert parsed.reasoning_context_returned is None
+
+
+def test_wrong_effort_stops_when_returned() -> None:
+    r = mutate(valid_response(), reasoning={"effort": "medium", "context": REASONING_CONTEXT})
+    with pytest.raises(ResponsesProviderFailure, match="effort"):
+        parse_scoring_response(json.dumps(r).encode())
+
+
+def test_response_level_error_stops() -> None:
+    r = mutate(valid_response(), error={"code": "x", "message": "y"})
+    with pytest.raises(ResponsesProviderFailure, match="error"):
+        parse_scoring_response(json.dumps(r).encode())
+
+
+def test_incomplete_details_stops() -> None:
+    r = mutate(valid_response(), incomplete_details={"reason": "max_output_tokens"})
+    with pytest.raises(ResponsesProviderFailure, match="incomplete"):
+        parse_scoring_response(json.dumps(r).encode())
+
+
+# ---- Task 2 tight output parsing ----
+def test_multiple_output_messages_stops() -> None:
+    r = mutate(valid_response(), output=[msg("0.73"), msg("0.74")])
+    with pytest.raises(ResponsesProviderFailure, match="exactly one output message"):
+        parse_scoring_response(json.dumps(r).encode())
+
+
+def test_refusal_stops() -> None:
+    _env_key()
+    try:
+        t = FakeTransport(
+            TransportResult(
+                200,
+                json.dumps(
+                    mutate(
+                        valid_response(),
+                        output=[msg("I am sorry, I cannot help with that request.")],
+                    )
+                ).encode(),
+            )
+        )
+        with pytest.raises(ResponsesProviderFailure, match="PLAIN_DECIMAL_V1|not a valid"):
+            make_client(t).make_single_decision(_frozen_request())
+    finally:
+        _clear_key()
+
+
+def test_multiple_content_blocks_stops() -> None:
+    r = mutate(
+        valid_response(),
+        output=[
+            {
+                "type": "message",
+                "role": "assistant",
+                "status": "completed",
+                "content": [
+                    {"type": "output_text", "text": "0.73"},
+                    {"type": "output_text", "text": "x"},
+                ],
+            }
+        ],
+    )
+    with pytest.raises(ResponsesProviderFailure, match="exactly one content block"):
+        parse_scoring_response(json.dumps(r).encode())
+
+
+def test_wrong_role_stops() -> None:
+    r = mutate(
+        valid_response(),
+        output=[
+            {
+                "type": "message",
+                "role": "user",
+                "status": "completed",
+                "content": [{"type": "output_text", "text": "0.73"}],
+            }
+        ],
+    )
+    with pytest.raises(ResponsesProviderFailure, match="role"):
+        parse_scoring_response(json.dumps(r).encode())
+
+
+def test_content_block_type_not_output_text_stops() -> None:
+    r = mutate(
+        valid_response(),
+        output=[
+            {
+                "type": "message",
+                "role": "assistant",
+                "status": "completed",
+                "content": [{"type": "input_text", "text": "0.73"}],
+            }
+        ],
+    )
+    with pytest.raises(ResponsesProviderFailure, match="output_text"):
+        parse_scoring_response(json.dumps(r).encode())
+
+
+def test_tool_item_output_stops() -> None:
+    r = mutate(valid_response(), output=[{"type": "function_call", "call_id": "c", "name": "f"}])
+    with pytest.raises(ResponsesProviderFailure, match="unexpected/forbidden"):
+        parse_scoring_response(json.dumps(r).encode())
+
+
+def test_zero_messages_stops() -> None:
+    r = mutate(valid_response(), output=[reasoning_item()])
+    with pytest.raises(ResponsesProviderFailure, match="exactly one output message"):
+        parse_scoring_response(json.dumps(r).encode())
+
+
+def test_message_incomplete_status_stops() -> None:
+    r = mutate(
+        valid_response(),
+        output=[
+            {
+                "type": "message",
+                "role": "assistant",
+                "status": "incomplete",
+                "content": [{"type": "output_text", "text": "0.73"}],
+            }
+        ],
+    )
+    with pytest.raises(ResponsesProviderFailure, match="message status"):
+        parse_scoring_response(json.dumps(r).encode())
+
+
+# ---- Task 3 raw preservation / hash ----
+def test_freeze_raw_results_retains_provider_bytes_and_hash() -> None:
+    raw = json.dumps(valid_response()).encode()
+    prov_sha = __import__("hashlib").sha256(raw).hexdigest()
+    meta = {
+        "provider_response_sha256": prov_sha,
+        "raw_provider_b64": base64.b64encode(raw).decode("ascii"),
+    }
+    rr = RawResult(
+        run_id="R",
+        case_id="C1",
+        truth_label=True,
+        returned_score=0.73,
+        raw_model_response=b"0.73",
+        model_provider="openai_responses_api",
+        model_id=MODEL,
+        model_configuration_sha256=DIRECT_CONFIG_HASH,
+        provider_metadata=meta,
+        timestamp="t",
+        call_order=1,
+        parse_status=ParseStatus.VALID_SCORE,
+        provider_response_sha256=prov_sha,
+        provider_raw_b64=base64.b64encode(raw).decode("ascii"),
+    )
+    artifact = freeze_raw_results("R", (rr,))
+    assert artifact.name == "raw-results-R"
+    # lossless round trip: canonical record embeds provider_raw_base64
+    record = rr.canonical_record()
+    assert record["provider_response_sha256"] == prov_sha
+    assert record["provider_raw_base64"] == base64.b64encode(raw).decode("ascii")
+    # hash regression: artifact stable
+    assert len(artifact.sha256) == 64
+
+
+# ---- Task 4 manifest/config binding ----
+def test_manifest_config_mismatch_stops_before_transport() -> None:
+    _env_key()
     t = FakeTransport(TransportResult(200, json.dumps(valid_response()).encode()))
     client = make_client(t)
-    os.environ.pop("TEST_RESPONSES_KEY", None)
-    with pytest.raises(ResponsesProviderFailure, match="missing"):
-        client.make_single_decision(make_request())
-
-
-def test_malformed_decimal_stops() -> None:
-    os.environ["TEST_RESPONSES_KEY"] = "k"
-    resp = valid_response(text="seventy-three")
-    t = FakeTransport(TransportResult(200, json.dumps(resp).encode()))
+    bad_req = ModelRequest(
+        scoring_prompt=b"COMMITMENT:{commitment}",
+        model_visible_payload={"commitment": "x"},
+        model_configuration="not-a-config",  # type: ignore[arg-type]
+        case_id="S0-000",
+    )
     try:
-        with pytest.raises(ResponsesProviderFailure, match="PLAIN_DECIMAL_V1"):
-            make_client(t).make_single_decision(make_request())
+        with pytest.raises(ResponsesProviderFailure, match="model_configuration"):
+            client.make_single_decision(bad_req)
+        assert t.attempts == 0  # never reached transport
     finally:
-        del os.environ["TEST_RESPONSES_KEY"]
+        _clear_key()
 
 
-def test_multiple_output_messages_stops() -> None:
-    resp = valid_response()
-    resp["output"] = [msg("0.73"), msg("0.74")]
-    with pytest.raises(ResponsesProviderFailure, match="exactly one message"):
-        parse_scoring_response(json.dumps(resp).encode())
+def test_exact_direct_model_configuration() -> None:
+    c = direct_model_configuration()
+    assert c.provider == "openai_responses_api"
+    assert c.model_id == "gpt-5.6-luna"
+    assert c.reasoning_settings["effort"] == "xhigh"
+    assert c.reasoning_settings["context"] == "current_turn"
+    assert "mode" not in c.reasoning_settings
+    assert c.temperature is None
+    assert c.seed is None
+    assert c.max_output_length == 128000
+    assert c.api_parameters["tools"] == []
+    assert c.api_parameters["previous_response_id"] is None
+    assert c.api_parameters["stream"] is False
+    # make_single_decision asserts this hash matches
+    assert c.sha256 == DIRECT_CONFIG_HASH
 
 
-def test_tool_call_output_stops() -> None:
-    resp = valid_response()
-    resp["output"] = [{"type": "function_call", "call_id": "c", "name": "f"}]
-    with pytest.raises(ResponsesProviderFailure, match="forbidden output item"):
-        parse_scoring_response(json.dumps(resp).encode())
-
-
-def test_incomplete_failed_status_stops() -> None:
-    resp = valid_response()
-    resp["status"] = "failed"
-    with pytest.raises(ResponsesProviderFailure, match="not completed"):
-        parse_scoring_response(json.dumps(resp).encode())
-    resp2 = valid_response()
-    resp2["status"] = "incomplete"
-    with pytest.raises(ResponsesProviderFailure, match="not completed"):
-        parse_scoring_response(json.dumps(resp2).encode())
-
-
-def test_wrong_returned_model_detected() -> None:
-    # returned model != requested -> not a contract violation per se, but must be observable
-    resp = valid_response()
-    resp["model"] = "gpt-5.6-sol"
-    parsed = parse_scoring_response(json.dumps(resp).encode())
-    assert parsed.model_returned == "gpt-5.6-sol"
-    assert parsed.model_returned != MODEL
-
-
-def test_missing_response_id_stops() -> None:
-    resp = valid_response()
-    del resp["id"]
-    with pytest.raises(ResponsesProviderFailure, match="response id"):
-        parse_scoring_response(json.dumps(resp).encode())
-
-
-def test_missing_usage_recorded_as_none() -> None:
-    resp = valid_response()
-    del resp["usage"]
-    parsed = parse_scoring_response(json.dumps(resp).encode())
-    assert parsed.usage is None
-
-
-def test_http_failure_stops_no_retry() -> None:
-    os.environ["TEST_RESPONSES_KEY"] = "k"
-    t = FakeTransport(TransportResult(429, b"{}"))
-    try:
-        with pytest.raises(ResponsesProviderFailure, match="HTTP 429"):
-            make_client(t).make_single_decision(make_request())
-    finally:
-        del os.environ["TEST_RESPONSES_KEY"]
-    assert t.attempts == 1
-
-
-def test_timeout_transport_raises_stop() -> None:
-    def boom(*, body: Mapping[str, Any], api_key: str, timeout_seconds: int) -> Any:
-        raise ResponsesProviderFailure("transport error (no retry)")
-
-    os.environ["TEST_RESPONSES_KEY"] = "k"
-    try:
-        with pytest.raises(ResponsesProviderFailure, match="transport error"):
-            DirectResponsesClient(
-                api_key_env="TEST_RESPONSES_KEY", transport=boom
-            ).make_single_decision(make_request())
-    finally:
-        del os.environ["TEST_RESPONSES_KEY"]
-
-
-def test_build_request_body_exact_frozen_config() -> None:
+# ---- Task 5 max output ----
+def test_exact_max_output_request() -> None:
     body = build_request_body("score this")
-    assert body["model"] == MODEL
-    assert body["reasoning"]["effort"] == REASONING_EFFORT
-    assert body["reasoning"]["context"] == REASONING_CONTEXT
-    assert "mode" not in body["reasoning"]  # standard mode (never pro)
-    assert body["max_output_tokens"] == MAX_OUTPUT_TOKENS
+    assert body["max_output_tokens"] == 128000
+    assert body["model"] == "gpt-5.6-luna"
+    assert body["reasoning"] == {"effort": "xhigh", "context": "current_turn"}
     assert body["store"] is False
     assert "tools" not in body
+
+
+def test_build_request_body_frozen() -> None:
+    body = build_request_body("score this")
     assert "previous_response_id" not in body
     assert "conversation" not in body
     assert "background" not in body
     assert "stream" not in body
 
 
-def test_request_config_hash_stable_and_endpoint() -> None:
-    h = request_config_hash()
-    assert len(h) == 64
-    assert RESPONSES_ENDPOINT == "https://api.openai.com/v1/responses"
-    assert request_config_hash() == h
-
-
-def test_zero_retry_by_construction() -> None:
-    # The transport performs exactly one HTTP POST: no retry loop exists. Prove it
-    # by a transport that always fails; the adapter must NOT retry (attempts==1).
-    os.environ["TEST_RESPONSES_KEY"] = "k"
-    t = FakeTransport(TransportResult(500, b""))
+# ---- transport zero-retry ----
+def test_http_failure_stops_no_retry() -> None:
+    _env_key()
     try:
+        t = FakeTransport(TransportResult(429, b"{}"))
+        with pytest.raises(ResponsesProviderFailure, match="HTTP 429"):
+            make_client(t).make_single_decision(_frozen_request())
+        assert t.attempts == 1
+    finally:
+        _clear_key()
+
+
+def test_zero_retry_always_failing() -> None:
+    _env_key()
+    try:
+        t = FakeTransport(TransportResult(500, b""))
         with pytest.raises(ResponsesProviderFailure):
-            make_client(t).make_single_decision(make_request())
+            make_client(t).make_single_decision(_frozen_request())
+        assert t.attempts == 1
     finally:
-        del os.environ["TEST_RESPONSES_KEY"]
-    assert t.attempts == 1
-
-
-def test_request_bodies_are_frozen_identical() -> None:
-    t = FakeTransport(TransportResult(200, json.dumps(valid_response()).encode()))
-    client = make_client(t)
-    os.environ["TEST_RESPONSES_KEY"] = "k"
-    try:
-        client.make_single_decision(make_request())
-    finally:
-        del os.environ["TEST_RESPONSES_KEY"]
-    body = t.calls[0]["body"]
-    assert body == {
-        "model": MODEL,
-        "input": "COMMITMENT:the dock sensor is satisfied",
-        "reasoning": {"effort": REASONING_EFFORT, "context": REASONING_CONTEXT},
-        "max_output_tokens": MAX_OUTPUT_TOKENS,
-        "store": False,
-    }
+        _clear_key()

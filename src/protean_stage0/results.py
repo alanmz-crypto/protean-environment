@@ -37,6 +37,8 @@ class RawResult:
     call_order: int
     parse_status: ParseStatus
     mechanical_error_status: str | None = None
+    provider_response_sha256: str | None = None
+    provider_raw_b64: str | None = None
 
     def canonical_record(self) -> dict[str, Any]:
         encoded_response = (
@@ -53,6 +55,8 @@ class RawResult:
             "model_provider": self.model_provider,
             "parse_status": self.parse_status.value,
             "provider_metadata": dict(self.provider_metadata) if self.provider_metadata else None,
+            "provider_raw_base64": self.provider_raw_b64,
+            "provider_response_sha256": self.provider_response_sha256,
             "raw_model_response_base64": encoded_response,
             "returned_score": self.returned_score,
             "run_id": self.run_id,

@@ -115,6 +115,7 @@ def run_single_decision_loop(
                 "model formatting failure; no restart authorized",
             )
 
+        meta = dict(response.provider_metadata) if response.provider_metadata else {}
         results.append(
             RawResult(
                 run_id=manifest.run_id,
@@ -125,10 +126,12 @@ def run_single_decision_loop(
                 model_provider=model.provider,
                 model_id=model.model_id,
                 model_configuration_sha256=model.sha256,
-                provider_metadata=dict(response.provider_metadata),
+                provider_metadata=meta,
                 timestamp=timestamp,
                 call_order=call_order,
                 parse_status=ParseStatus.VALID_SCORE,
+                provider_response_sha256=meta.get("provider_response_sha256"),
+                provider_raw_b64=meta.get("raw_provider_b64"),
             )
         )
     return CallLoopResult(tuple(results), None, None)

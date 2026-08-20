@@ -19,8 +19,10 @@ No previous_response_id, no conversation object, no persisted prior reasoning, n
 - reasoning.effort: xhigh
 - reasoning.context: current_turn
 - reasoning.mode: NOT SET (standard mode; never "pro")
-- max_output_tokens: 8192 (xhigh reasoning room; no truncation hazard)
+- max_output_tokens: 128000 (Luna maximum output allowance; no arbitrary xHigh reasoning ceiling; semantic/machine constraint from scoring prompt + PLAIN_DECIMAL_V1)
 - store: false
+- temperature: omitted (None); seed: none
+- authoritative ModelConfiguration SHA-256: b3e21561ef3f84e2c38275f761ba8c7cbdf1e4a2ede04972f924f58d4827d9fa (src/protean_stage0/direct_config.py)
 - input: the frozen per-case scoring prompt (scoring-prompt sha ae8f093a69a7bae6818421000490a14c8a19a4a6be33069a1858bf0a9d7f6909) + case model-visible payload
 - tools: absent; previous_response_id/conversation/background/stream: absent
 - authorization: runtime OpenAI API key from env OPENAI_API_KEY (never baked into image/repo/inputs)
@@ -28,12 +30,11 @@ No previous_response_id, no conversation object, no persisted prior reasoning, n
 ## Zero-retry transport (Task 2)
 One HTTP POST via stdlib urllib.request (has no auto-retry; adapter adds no loop). Timeout/HTTP/transport error => STOP, never retry. Exactly one attempt per case (tests assert attempts==1).
 
-## Response acceptance (Task 3 / assert-and-reject; violation => STOP, no retry)
-- status == completed
-- exactly one final textual message; exactly one message with non-empty text
-- answer satisfies frozen PLAIN_DECIMAL_V1
-- output items only of allowed types {message, reasoning}; ANY tool/other item type (function_call, web_search_call, file_search_call, mcp_*, etc.) => STOP
-- record provenance: response id, requested model, returned model (if exposed), status, usage (incl. reasoning tokens under usage.output_tokens_details.reasoning_tokens), created_at, raw response artifact, timestamp, request-config hash.
+## Response acceptance (fail-closed; violation => STOP, no retry)
+- status == "completed" EXACTLY; object == "response" (if exposed); returned model == gpt-5.6-luna EXACTLY; returned reasoning.context == current_turn (if exposed); returned effort == xhigh (if exposed); no response-level error / incomplete_details.
+- exactly ONE output message; role assistant; message status == completed (if present); exactly ONE content block of type output_text; that text satisfies PLAIN_DECIMAL_V1.
+- output item types only in {message, reasoning}; reasoning is permitted but never supplies the scored answer; ANY tool/other item type (function_call, web_search_call, file_search_call, mcp_*, etc.) => STOP.
+- durable provenance: response id, requested model, returned model, effective reasoning context/effort, usage (incl. reasoning tokens under usage.output_tokens_details.reasoning_tokens), created_at, exact raw provider-response bytes (lossless base64) + SHA-256 into the raw-result artifact, request-body SHA-256, request-config SHA.
 
 ## Experimental inputs (UNCHANGED; Task 4)
 - template bank sha 295fe92fe12ba14470166d6b160492fb1564d29b06dc46500f8b2cbfdf73c758

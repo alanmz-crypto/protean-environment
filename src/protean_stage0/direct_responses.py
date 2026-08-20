@@ -1,22 +1,19 @@
 """Direct OpenAI Responses API scoring adapter for Stage 0 (Luna xHigh).
 
-This REPLACES the Codex surface (rejected: codex exec --json and codex app-server
-could not guarantee exactly one upstream decision per scoring turn). The frozen
-scientific decision unit here is: ONE independently issued OpenAI Responses API
-request and its single returned Response object. No previous_response_id, no
-conversation object, no persisted prior reasoning, no tool continuation, no
-client retry, no streaming.
+ACTIVE experimental surface (Codex exec/app-server REJECTED). Frozen decision
+unit: ONE independently issued Responses API request and its single returned
+Response object. No previous_response_id / conversation / persisted prior
+reasoning / tool continuation / client retry / streaming.
 
-One attempt per case: the transport issues exactly one HTTP POST and never
-retries (urllib.request has no auto-retry; we add no retry loop). Any timeout,
-HTTP, or transport error => STOP, never retry.
-
-No live model call is made except when the harness actually runs it with a real
-runtime credential; unit tests use a fake transport.
+Fail closed on the effective response and the final output. One attempt per case
+(transport issues exactly one HTTP POST, never retries). Any mismatch => STOP,
+no retry. The exact raw provider-response bytes and their SHA-256 are carried in
+provider_metadata for durable retention in the Stage-0 raw-result artifact.
 """
 
 from __future__ import annotations
 
+import base64
 import json
 import os
 import urllib.error
@@ -27,31 +24,38 @@ from datetime import UTC, datetime
 from typing import Any, Protocol
 
 from .artifacts import canonical_json_bytes, sha256_bytes
+from .direct_config import (
+    DIRECT_CONFIG_HASH,
+    ENDPOINT,
+    MAX_OUTPUT_TOKENS,
+    MODEL,
+    NO_RETRIES,
+    REASONING_CONTEXT,
+    REASONING_EFFORT,
+    STORE,
+)
 from .harness import ModelClient, ModelRequest, ModelResponse, ProviderFailure
 
-# ---------------------------------------------------------------------------
-# Frozen exact request configuration (Task 1)
-# ---------------------------------------------------------------------------
 
-RESPONSES_ENDPOINT: str = "https://api.openai.com/v1/responses"
-MODEL: str = "gpt-5.6-luna"
-REASONING_EFFORT: str = "xhigh"
-REASONING_CONTEXT: str = "current_turn"
-# Standard mode (not pro): default; we do NOT set reasoning.mode.
-STORE: bool = False
-# xHigh needs reasoning room; visible output is one decimal but reasoning tokens
-# count against the output budget. 8192 is far above any xhigh reasoning output
-# and far below the model context window => no truncation hazard.
-MAX_OUTPUT_TOKENS: int = 8192
-NO_RETRIES: int = 0  # semantic: exactly one attempt, zero retries (by construction)
+def build_request_body(prompt_text: str) -> dict[str, Any]:
+    """Return the exact frozen request body for /v1/responses."""
+    return {
+        "model": MODEL,
+        "input": prompt_text,
+        "reasoning": {
+            "effort": REASONING_EFFORT,
+            "context": REASONING_CONTEXT,
+        },
+        "max_output_tokens": MAX_OUTPUT_TOKENS,
+        "store": STORE,
+        # no tools / previous_response_id / conversation / background / stream
+    }
 
-# Environment key for the OpenAI API bearer token (never baked into repo/image).
-API_KEY_ENV: str = "OPENAI_API_KEY"
 
+API_KEY_ENV = "OPENAI_API_KEY"
 _TERMINAL_FAILED_STATUSES = frozenset(
     {"failed", "cancelled", "incomplete", "queued", "in_progress"}
 )
-_ALLOWED_OUTPUT_TYPES = frozenset({"message", "reasoning"})
 _FORBIDDEN_OUTPUT_TYPES = frozenset(
     {
         "function_call",
@@ -82,35 +86,7 @@ _FORBIDDEN_OUTPUT_TYPES = frozenset(
         "program_output",
     }
 )
-
-
-def build_request_body(prompt_text: str) -> dict[str, Any]:
-    """Return the exact frozen request body for /v1/responses."""
-    return {
-        "model": MODEL,
-        "input": prompt_text,
-        "reasoning": {
-            "effort": REASONING_EFFORT,
-            "context": REASONING_CONTEXT,
-        },
-        "max_output_tokens": MAX_OUTPUT_TOKENS,
-        "store": STORE,
-        # no tools / no previous_response_id / no conversation / no background /
-        # no stream (all absent => not sent)
-    }
-
-
-def request_config_hash() -> str:
-    """Hash of the frozen request configuration (excluding the per-case prompt)."""
-    config = {
-        "endpoint": RESPONSES_ENDPOINT,
-        "model": MODEL,
-        "reasoning": {"effort": REASONING_EFFORT, "context": REASONING_CONTEXT},
-        "max_output_tokens": MAX_OUTPUT_TOKENS,
-        "store": STORE,
-        "no_retries": NO_RETRIES,
-    }
-    return sha256_bytes(canonical_json_bytes(config))
+_ALLOWED_OUTPUT_TYPES = frozenset({"message", "reasoning"})
 
 
 class ResponsesProviderFailure(ProviderFailure):
@@ -132,7 +108,7 @@ class Transport(Protocol):
 def _post_once(body: dict[str, Any], *, api_key: str, timeout_seconds: int) -> bytes:
     """Issue EXACTLY ONE HTTP POST; urllib has no auto-retry and we add none."""
     req = urllib.request.Request(
-        RESPONSES_ENDPOINT,
+        ENDPOINT,
         data=json.dumps(body).encode("utf-8"),
         method="POST",
         headers={
@@ -141,9 +117,9 @@ def _post_once(body: dict[str, Any], *, api_key: str, timeout_seconds: int) -> b
         },
     )
     with urllib.request.urlopen(req, timeout=timeout_seconds) as resp:
-        body_bytes = resp.read()
-        assert isinstance(body_bytes, bytes | bytearray)
-        return bytes(body_bytes)
+        raw = resp.read()
+        assert isinstance(raw, bytes | bytearray)
+        return bytes(raw)
 
 
 def default_transport(
@@ -162,73 +138,109 @@ def default_transport(
 class ParsedScoringResponse:
     response_id: str
     status: str
+    object_type: str | None
     model_returned: str | None
+    reasoning_effort_returned: str | None
+    reasoning_context_returned: str | None
     created_at: int | None
     usage: Mapping[str, Any] | None
     final_answer: str
     raw_response: bytes
 
 
+def _require(cond: bool, msg: str) -> None:
+    if not cond:
+        raise ResponsesProviderFailure(msg)
+
+
 def parse_scoring_response(raw_bytes: bytes) -> ParsedScoringResponse:
-    """Parse + assert the single-Response contract. Violations => ProviderFailure."""
+    """Parse + assert the single-Response contract. Violation => STOP."""
     try:
         obj = json.loads(raw_bytes.decode("utf-8"))
     except Exception as exc:
         raise ResponsesProviderFailure(f"malformed JSON response: {exc!r}") from exc
-    if not isinstance(obj, dict):
-        raise ResponsesProviderFailure("response is not a JSON object")
+    _require(isinstance(obj, dict), "response is not a JSON object")
 
+    # Task 1: fail closed on the effective response.
     status = str(obj.get("status", ""))
-    if status in _TERMINAL_FAILED_STATUSES:
-        raise ResponsesProviderFailure(f"response status not completed: {status}")
+    _require(status == "completed", f"status must be exactly completed, got {status!r}")
+    object_type = obj.get("object")
+    if object_type is not None:
+        _require(str(object_type) == "response", f"object must be response, got {object_type!r}")
+    model_returned = obj.get("model")
+    _require(str(model_returned) == MODEL, f"returned model mismatch: {model_returned!r}")
+    reasoning_returned = obj.get("reasoning")
+    if isinstance(reasoning_returned, dict):
+        effort_rt = reasoning_returned.get("effort")
+        context_rt = reasoning_returned.get("context")
+        if effort_rt is not None:
+            _require(str(effort_rt) == REASONING_EFFORT, f"effort mismatch: {effort_rt!r}")
+        if context_rt is not None:
+            _require(str(context_rt) == REASONING_CONTEXT, f"context mismatch: {context_rt!r}")
+    else:
+        effort_rt = None
+        context_rt = None
+    _require(obj.get("error") is None, "response-level error present")
+    incomplete = obj.get("incomplete_details")
+    _require(incomplete is None, "response incomplete_details present")
 
     response_id = str(obj.get("id", ""))
-    if not response_id:
-        raise ResponsesProviderFailure("missing response id")
-    model_returned = obj.get("model")
+    _require(bool(response_id), "missing response id")
     created_at = obj.get("created_at")
     created_at_int = int(created_at) if isinstance(created_at, int) else None
 
-    output = obj.get("output")
-    if not isinstance(output, list):
-        raise ResponsesProviderFailure("missing output array")
-
     usage = obj.get("usage")
-    if usage is not None and not isinstance(usage, dict):
-        raise ResponsesProviderFailure("usage is not an object")
+    if usage is not None:
+        _require(isinstance(usage, dict), "usage is not an object")
 
+    # Task 2: tighten final-output parsing.
+    output = obj.get("output")
+    _require(isinstance(output, list), "missing output array")
     messages: list[str] = []
+    final_message: str | None = None
     for item in output:
-        if not isinstance(item, dict):
-            raise ResponsesProviderFailure(f"malformed output item: {item!r}")
+        _require(isinstance(item, dict), "malformed output item")
         item_type = str(item.get("type", ""))
-        if item_type in _FORBIDDEN_OUTPUT_TYPES:
-            raise ResponsesProviderFailure(f"forbidden output item type: {item_type}")
-        if item_type not in _ALLOWED_OUTPUT_TYPES:
-            raise ResponsesProviderFailure(f"unexpected output item type: {item_type}")
-        if item_type == "message":
-            texts: list[str] = []
-            content = item.get("content")
-            if isinstance(content, list):
-                for block in content:
-                    if isinstance(block, dict) and block.get("type") == "output_text":
-                        texts.append(str(block.get("text", "")))
-            messages.append("".join(texts))
-
-    non_empty = [m for m in messages if m.strip()]
-    if len(non_empty) != 1:
-        raise ResponsesProviderFailure(
-            f"expected exactly one message with text, saw {len(non_empty)}"
+        _require(
+            item_type in _ALLOWED_OUTPUT_TYPES,
+            f"unexpected/forbidden output item type: {item_type!r}",
         )
-    final_answer = non_empty[0]
+        if item_type == "message":
+            role = item.get("role")
+            _require(str(role) == "assistant", f"message role must be assistant, got {role!r}")
+            status_m = item.get("status")
+            if status_m is not None:
+                _require(
+                    str(status_m) == "completed", f"message status not completed: {status_m!r}"
+                )
+            content = item.get("content")
+            _require(isinstance(content, list), "message content must be a list")
+            _require(len(content) == 1, "message must have exactly one content block")
+            block = content[0]
+            _require(isinstance(block, dict), "content block is not an object")
+            _require(
+                str(block.get("type", "")) == "output_text",
+                "content block type must be output_text",
+            )
+            text = str(block.get("text", ""))
+            messages.append(text)
+            final_message = text
+        # reasoning items are permitted but never supply the scored answer.
+
+    _require(len(messages) == 1, f"expected exactly one output message, saw {len(messages)}")
+    _require(bool(final_message and final_message.strip()), "output message text is empty")
+    assert final_message is not None
 
     return ParsedScoringResponse(
         response_id=response_id,
         status=status,
-        model_returned=model_returned,
+        object_type=str(object_type) if object_type is not None else None,
+        model_returned=str(model_returned) if model_returned is not None else None,
+        reasoning_effort_returned=effort_rt,
+        reasoning_context_returned=context_rt,
         created_at=created_at_int,
-        usage=usage,
-        final_answer=final_answer,
+        usage=usage if isinstance(usage, dict) else None,
+        final_answer=final_message,
         raw_response=raw_bytes,
     )
 
@@ -261,6 +273,13 @@ class DirectResponsesClient(ModelClient):
     def make_single_decision(self, request: ModelRequest) -> ModelResponse:
         from .parse_contract import parse_plain_decimal_v1
 
+        # Task 4: bind the executable request to the manifest authority.
+        cfg = request.model_configuration
+        _require(
+            getattr(cfg, "sha256", None) == DIRECT_CONFIG_HASH,
+            "request model_configuration does not match frozen direct configuration",
+        )
+
         api_key = os.environ.get(self.api_key_env, "")
         if not api_key:
             raise ResponsesProviderFailure(
@@ -271,27 +290,40 @@ class DirectResponsesClient(ModelClient):
             **dict(request.model_visible_payload)
         )
         body = build_request_body(prompt_text)
+        body_hash = sha256_bytes(canonical_json_bytes(body))
+
         transport_result = self.transport(
-            body=body, api_key=api_key, timeout_seconds=self.request_timeout
+            body=body,
+            api_key=api_key,
+            timeout_seconds=self.request_timeout,
         )
         if transport_result.status_code != 200:
             raise ResponsesProviderFailure(f"HTTP {transport_result.status_code} (no retry)")
 
-        parsed = parse_scoring_response(transport_result.raw_bytes)
+        raw_provider_bytes = transport_result.raw_bytes
+        provider_sha = sha256_bytes(raw_provider_bytes)
+        parsed = parse_scoring_response(raw_provider_bytes)
+
         score = parse_plain_decimal_v1(parsed.final_answer.encode("utf-8"))
         if score is None:
             raise ResponsesProviderFailure("final answer not a valid PLAIN_DECIMAL_V1")
 
         reason_tokens = extract_reasoning_tokens(parsed.usage)
-        metadata = {
+        metadata: dict[str, Any] = {
+            "request_body_sha256": body_hash,
+            "provider_response_sha256": provider_sha,
+            "raw_provider_b64": base64.b64encode(raw_provider_bytes).decode("ascii"),
             "response_id": parsed.response_id,
             "requested_model": MODEL,
             "returned_model": parsed.model_returned,
+            "effective_reasoning_context": parsed.reasoning_context_returned,
+            "effective_reasoning_effort": parsed.reasoning_effort_returned,
             "status": parsed.status,
             "created_at": parsed.created_at,
             "usage": dict(parsed.usage) if parsed.usage else None,
             "reasoning_tokens": reason_tokens,
-            "request_config_hash": request_config_hash(),
+            "request_config_hash": request.model_configuration.sha256,
+            "direct_config_hash": DIRECT_CONFIG_HASH,
             "no_retries": NO_RETRIES,
             "single_hit": True,
             "timestamp": datetime.now(UTC).isoformat(),

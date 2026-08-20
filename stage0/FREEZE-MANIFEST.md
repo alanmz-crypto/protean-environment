@@ -18,13 +18,18 @@ Branch: feat/2026-08-19-stage0-freeze-prep
 - Cursor escalation `stage0/CURSOR-ESCALATION-boolean-rendering.md` sha 3c5c48709a066cc149631a7712073776246f07651b2f1089b144073b8b160a25
 
 ## Provider freeze
-- OpenAI Codex CLI via Ryan ChatGPT subscription; pinned codex-cli 0.147.0 in devcontainer; model gpt-5.6-luna; reasoning effort xhigh; container-local CODEX_HOME=/home/vscode/.codex-protean; empty scoring cwd /tmp/protean-score-empty; read-only sandbox; ephemeral; no tools; no memories; no model_messages; --ignore-user-config --ignore-rules; assert-and-reject --json contract.
+- ACTIVE experimental scoring surface: DIRECT OpenAI Responses API.
+  - model gpt-5.6-luna; reasoning.effort=xhigh; reasoning.context=current_turn; standard mode (no pro).
+  - endpoint POST https://api.openai.com/v1/responses; store=false; max_output_tokens=128000; temperature omitted (None); seed none.
+  - NO tools / previous_response_id / conversation / background / stream; ZERO client retries; one POST per case.
+  - authoritative ModelConfiguration SHA-256: b3e21561ef3f84e2c38275f761ba8c7cbdf1e4a2ede04972f924f58d4827d9fa (src/protean_stage0/direct_config.py).
+- REJECTED (historical evidence only): Codex CLI / codex app-server (codex exec --json and app-server could not guarantee exactly one upstream decision per turn; see stage0/CODEX-V147-SOURCE-AUDIT.md, APP-SERVER-TASK0-RETRY-STOP.md, ZERO-RETRY-INVESTIGATION-RESULT.md). codex_config.py / codex_adapter.py marked REJECTED/SUPERSEDED.
 
 ## Integration modules
-- src/protean_stage0/codex_config.py (frozen literal invocation config)
-- src/protean_stage0/codex_adapter.py (CodexModelClient, event-parser, contract)
-- tests/test_codex_adapter.py (accepted fixture + all negative fixtures)
-- devcontainer: codex pinned, container-local CODEX_HOME config (no baked auth)
+- src/protean_stage0/direct_config.py (authoritative direct Responses ModelConfiguration; DIRECT_CONFIG_HASH)
+- src/protean_stage0/direct_responses.py (DirectResponsesClient; zero-retry transport; fail-closed response+output contract; raw provider bytes+sha)
+- tests/test_direct_responses.py (protocol-faithful fakes; accepted + every fail-closed regression fixture)
+- Historical (REJECTED): src/protean_stage0/codex_adapter.py, codex_config.py, tests/test_codex_adapter.py — retained as evidence, not active.
 
 ## Zero live calls
 No experimental/rehearsal provider call made. Adapter uses fakes for tests. Devcontainer build does not authenticate.
