@@ -120,7 +120,7 @@ def test_changing_one_byte_of_manifest_blocks(tmp_path) -> None:
     # flip one byte near the end
     flipped = raw[:-2] + bytes([raw[-2] ^ 0x01]) + raw[-1:]
     p.write_bytes(flipped)
-    with pytest.raises(RuntimeError, match="round-trip"):
+    with pytest.raises(RuntimeError, match="corrupt"):
         drv.load_prepared_manifest(p)
 
 
