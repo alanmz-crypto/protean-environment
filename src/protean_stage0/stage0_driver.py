@@ -200,7 +200,12 @@ def _eval_prov_from_dict(raw: dict[str, Any]) -> EvaluatorProvenance:
 
 def reconstruct_run_manifest_from_bytes(raw: bytes) -> RunManifest:
     """Rebuild the RunManifest EXACTLY from the prepared manifest bytes."""
-    data = json.loads(raw.decode("utf-8"))
+    try:
+        data = json.loads(raw.decode("utf-8"))
+    except Exception as exc:
+        raise RuntimeError(f"corrupt prepared manifest: {exc!r}") from exc
+    if not isinstance(data, dict):
+        raise RuntimeError("prepared manifest is not a JSON object")
     return RunManifest(
         protocol_version=data["protocol_version"],
         protocol_sha256=data["protocol_sha256"],
