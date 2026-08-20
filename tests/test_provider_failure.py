@@ -10,6 +10,8 @@ from __future__ import annotations
 
 from typing import Any
 
+import pytest
+
 from protean_stage0.harness import (
     ModelClient,
     ModelRequest,
@@ -96,15 +98,15 @@ def test_bare_provider_failure_defaults_to_generic() -> None:
     assert row.provider_failure_category == "provider"
 
 
-def test_raw_transport_exception_classified_as_transport() -> None:
-    # A client that raises a non-ProviderFailure exception (as a custom transport
-    # might) is still classified as a transport failure with no result coercion.
-    client = TypedFailingClient(RuntimeError("connect timed out"))
-    result = run_single_decision_loop(validated_run=validated_test_run(), client=client)
-    assert client.calls == 1
-    row = result.raw_results[0]
-    assert row.parse_status is ParseStatus.PROVIDER_API_FAILURE
-    assert row.provider_failure_category == "transport"
+def test_unexpected_client_exception_propagates_not_transport() -> None:
+    # A RuntimeError/TypeError from client code is an internal/mechanical harness
+    # failure, NOT a transport result. It must propagate out of the loop and
+    # never be recorded with provider_failure_category == "transport".
+    for exc in (RuntimeError("client bug"), TypeError("bad call")):
+        client = TypedFailingClient(exc)
+        with pytest.raises(type(exc)):
+            run_single_decision_loop(validated_run=validated_test_run(), client=client)
+        assert client.calls == 1
 
 
 def test_model_formatting_never_creates_mechanical_defect_evidence() -> None:

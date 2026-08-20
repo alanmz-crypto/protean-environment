@@ -100,24 +100,23 @@ class HttpFailure(ProviderFailure):
         self.evidence = evidence
 
 
-def classify_provider_failure(exc: BaseException) -> tuple[str, dict[str, Any] | None]:
-    """Return (category_value, provider_metadata) for a caught failure.
+def classify_provider_failure(exc: ProviderFailure) -> tuple[str, dict[str, Any] | None]:
+    """Return (category_value, provider_metadata) for a caught ProviderFailure.
 
+    Only typed provider failures are classified here. A non-ProviderFailure
+    exception from client code is an internal/mechanical harness failure and is
+    never routed through this function (it is never labeled ``transport``).
     ``provider_metadata`` carries only the safe evidence and never credentials
     or request/authorization headers.
     """
     if isinstance(exc, HttpFailure):
         return (exc.category.value, exc.evidence.safe_record())
-    if isinstance(exc, ProviderFailure):
-        # A bare base ProviderFailure has no finer contract intent; record it as
-        # a generic provider failure rather than mislabeling it as one of the
-        # four explicit categories.
-        if type(exc) is ProviderFailure:
-            return ("provider", None)
-        return (exc.category.value, None)
-    # A non-ProviderFailure exception from the client is a transport-level
-    # surprise; classify as transport without asserting on its internals.
-    return (ProviderFailureCategory.TRANSPORT.value, None)
+    # A bare base ProviderFailure has no finer contract intent; record it as a
+    # generic provider failure rather than mislabeling it as one of the four
+    # explicit categories.
+    if type(exc) is ProviderFailure:
+        return ("provider", None)
+    return (exc.category.value, None)
 
 
 def response_digest(raw_response: bytes) -> str:

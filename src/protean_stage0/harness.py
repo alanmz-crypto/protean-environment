@@ -81,7 +81,7 @@ def run_single_decision_loop(
         timestamp = datetime.now(UTC).isoformat()
         try:
             response = client.make_single_decision(request)
-        except Exception as exc:  # bind any client exception; fail closed on it
+        except ProviderFailure as exc:  # only typed provider failures, never swallowed
             category, failure_metadata = classify_provider_failure(exc)
             # A model-formatting failure means the model produced unusable
             # output; it must never collapse into a generic provider/API failure.
