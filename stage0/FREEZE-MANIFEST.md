@@ -6,7 +6,7 @@ Branch: feat/2026-08-19-stage0-freeze-prep
 ## Experiment artifacts — FROZEN (Ryan decision)
 - Template bank `stage0/template-bank-v1.json` sha 295fe92fe12ba14470166d6b160492fb1564d29b06dc46500f8b2cbfdf73c758
 - Canonical case-set `stage0/case-set-v1.jsonl-canonical.json` sha 06fe8d471b1fbbc226696ed6d80b706cc84a6040a7fb91a93814343420291556
-- Scoring prompt `stage0/candidate-scoring-prompt-v1.txt` (candidate awaiting Ryan final approval) sha ae8f093a69a7bae6818421000490a14c8a19a4a6be33069a1858bf0a9d7f6909
+- Scoring prompt `stage0/candidate-scoring-prompt-v1.txt` (APPROVED/FROZEN by Ryan; sha ae8f093a69a7bae6818421000490a14c8a19a4a6be33069a1858bf0a9d7f6909)
 - Case-review listing `stage0/case-set-v1-review.json` (80 textualized) sha 92e3dbd01ed39862a67fc6025678a07aa06902b4cb20f2ca00dc240e1dd8fa1a
 
 ## Independent reviews (preserved)

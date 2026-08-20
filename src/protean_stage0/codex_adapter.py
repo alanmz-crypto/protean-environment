@@ -1,3 +1,13 @@
+# STATUS: REJECTED / SUPERSEDED
+#
+# This Codex surface (codex exec --json and codex app-server) was REJECTED as the
+# Stage-0 experimental scoring provider because it could not guarantee exactly one
+# upstream Luna decision per scoring turn (see stage0/CODEX-V147-SOURCE-AUDIT.md,
+# stage0/APP-SERVER-TASK0-RETRY-STOP.md, stage0/ZERO-RETRY-INVESTIGATION-RESULT.md).
+# The ACTIVE experimental surface is the direct OpenAI Responses API adapter
+# (src/protean_stage0/direct_responses.py). This module is retained ONLY as
+# historical/evidence and MUST NOT be treated as the active scoring path.
+
 """Codex (gpt-5.6-luna, xhigh) Stage-0 scoring adapter with assert-and-reject.
 
 Launches exactly one fresh `codex exec` process per case, captures the full
