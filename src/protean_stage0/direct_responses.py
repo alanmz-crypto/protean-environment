@@ -38,7 +38,7 @@ from .harness import ModelClient, ModelRequest, ModelResponse, ProviderFailure
 
 
 def build_request_body(prompt_text: str) -> dict[str, Any]:
-    """Return the exact frozen request body for /v1/responses."""
+    """Return the frozen request body dict for /v1/responses."""
     return {
         "model": MODEL,
         "input": prompt_text,
@@ -50,6 +50,16 @@ def build_request_body(prompt_text: str) -> dict[str, Any]:
         "store": STORE,
         # no tools / previous_response_id / conversation / background / stream
     }
+
+
+def build_request_bytes(prompt_text: str) -> bytes:
+    """Return the EXACT JSON bytes to be transmitted and hashed.
+
+    The body is serialized once with the repository canonical JSON serializer;
+    those exact bytes are supplied as the HTTP request body and hashed for
+    request_body_sha256 (no double serialization).
+    """
+    return canonical_json_bytes(build_request_body(prompt_text))
 
 
 API_KEY_ENV = "OPENAI_API_KEY"
@@ -101,15 +111,15 @@ class TransportResult:
 
 class Transport(Protocol):
     def __call__(
-        self, *, body: Mapping[str, Any], api_key: str, timeout_seconds: int
+        self, *, payload: bytes, api_key: str, timeout_seconds: int
     ) -> TransportResult: ...
 
 
-def _post_once(body: dict[str, Any], *, api_key: str, timeout_seconds: int) -> bytes:
-    """Issue EXACTLY ONE HTTP POST; urllib has no auto-retry and we add none."""
+def _post_once(payload: bytes, *, api_key: str, timeout_seconds: int) -> bytes:
+    """Issue EXACTLY ONE HTTP POST with the EXACT payload bytes; no retries."""
     req = urllib.request.Request(
         ENDPOINT,
-        data=json.dumps(body).encode("utf-8"),
+        data=payload,
         method="POST",
         headers={
             "Content-Type": "application/json",
@@ -122,11 +132,9 @@ def _post_once(body: dict[str, Any], *, api_key: str, timeout_seconds: int) -> b
         return bytes(raw)
 
 
-def default_transport(
-    *, body: Mapping[str, Any], api_key: str, timeout_seconds: int
-) -> TransportResult:
+def default_transport(*, payload: bytes, api_key: str, timeout_seconds: int) -> TransportResult:
     try:
-        raw = _post_once(dict(body), api_key=api_key, timeout_seconds=timeout_seconds)
+        raw = _post_once(payload, api_key=api_key, timeout_seconds=timeout_seconds)
         return TransportResult(200, raw)
     except urllib.error.HTTPError as exc:
         return TransportResult(exc.code, exc.read())
@@ -138,7 +146,7 @@ def default_transport(
 class ParsedScoringResponse:
     response_id: str
     status: str
-    object_type: str | None
+    object_type: str
     model_returned: str | None
     reasoning_effort_returned: str | None
     reasoning_context_returned: str | None
@@ -164,22 +172,26 @@ def parse_scoring_response(raw_bytes: bytes) -> ParsedScoringResponse:
     # Task 1: fail closed on the effective response.
     status = str(obj.get("status", ""))
     _require(status == "completed", f"status must be exactly completed, got {status!r}")
+    # object == "response" is REQUIRED (frozen direct Responses object contract).
     object_type = obj.get("object")
-    if object_type is not None:
-        _require(str(object_type) == "response", f"object must be response, got {object_type!r}")
+    _require(
+        isinstance(object_type, str) and object_type == "response",
+        f"object must be response, got {object_type!r}",
+    )
     model_returned = obj.get("model")
     _require(str(model_returned) == MODEL, f"returned model mismatch: {model_returned!r}")
+    # reasoning must exist as an object and expose context == "current_turn";
+    # missing context STOPS (not pass). Effort: if returned, must be xhigh.
     reasoning_returned = obj.get("reasoning")
-    if isinstance(reasoning_returned, dict):
-        effort_rt = reasoning_returned.get("effort")
-        context_rt = reasoning_returned.get("context")
-        if effort_rt is not None:
-            _require(str(effort_rt) == REASONING_EFFORT, f"effort mismatch: {effort_rt!r}")
-        if context_rt is not None:
-            _require(str(context_rt) == REASONING_CONTEXT, f"context mismatch: {context_rt!r}")
-    else:
-        effort_rt = None
-        context_rt = None
+    _require(isinstance(reasoning_returned, dict), "response must return a reasoning object")
+    context_rt = reasoning_returned.get("context")
+    _require(
+        isinstance(context_rt, str) and context_rt == REASONING_CONTEXT,
+        f"reasoning.context must be {REASONING_CONTEXT}, got {context_rt!r}",
+    )
+    effort_rt = reasoning_returned.get("effort")
+    if effort_rt is not None:
+        _require(str(effort_rt) == REASONING_EFFORT, f"effort mismatch: {effort_rt!r}")
     _require(obj.get("error") is None, "response-level error present")
     incomplete = obj.get("incomplete_details")
     _require(incomplete is None, "response incomplete_details present")
@@ -234,7 +246,7 @@ def parse_scoring_response(raw_bytes: bytes) -> ParsedScoringResponse:
     return ParsedScoringResponse(
         response_id=response_id,
         status=status,
-        object_type=str(object_type) if object_type is not None else None,
+        object_type=object_type,
         model_returned=str(model_returned) if model_returned is not None else None,
         reasoning_effort_returned=effort_rt,
         reasoning_context_returned=context_rt,
@@ -289,11 +301,12 @@ class DirectResponsesClient(ModelClient):
         prompt_text = request.scoring_prompt.decode("utf-8").format(
             **dict(request.model_visible_payload)
         )
-        body = build_request_body(prompt_text)
-        body_hash = sha256_bytes(canonical_json_bytes(body))
+        # The EXACT bytes built here are transmitted AND hashed (one serialization).
+        payload = build_request_bytes(prompt_text)
+        body_hash = sha256_bytes(payload)
 
         transport_result = self.transport(
-            body=body,
+            payload=payload,
             api_key=api_key,
             timeout_seconds=self.request_timeout,
         )

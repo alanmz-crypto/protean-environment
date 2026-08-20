@@ -31,7 +31,7 @@ No previous_response_id, no conversation object, no persisted prior reasoning, n
 One HTTP POST via stdlib urllib.request (has no auto-retry; adapter adds no loop). Timeout/HTTP/transport error => STOP, never retry. Exactly one attempt per case (tests assert attempts==1).
 
 ## Response acceptance (fail-closed; violation => STOP, no retry)
-- status == "completed" EXACTLY; object == "response" (if exposed); returned model == gpt-5.6-luna EXACTLY; returned reasoning.context == current_turn (if exposed); returned effort == xhigh (if exposed); no response-level error / incomplete_details.
+- status == "completed" EXACTLY; object == "response" REQUIRED; returned model == gpt-5.6-luna EXACTLY; reasoning MUST be present as an object with context == "current_turn" (missing context STOPS); if effort is returned it must be xhigh; no response-level error / incomplete_details.
 - exactly ONE output message; role assistant; message status == completed (if present); exactly ONE content block of type output_text; that text satisfies PLAIN_DECIMAL_V1.
 - output item types only in {message, reasoning}; reasoning is permitted but never supplies the scored answer; ANY tool/other item type (function_call, web_search_call, file_search_call, mcp_*, etc.) => STOP.
 - durable provenance: response id, requested model, returned model, effective reasoning context/effort, usage (incl. reasoning tokens under usage.output_tokens_details.reasoning_tokens), created_at, exact raw provider-response bytes (lossless base64) + SHA-256 into the raw-result artifact, request-body SHA-256, request-config SHA.

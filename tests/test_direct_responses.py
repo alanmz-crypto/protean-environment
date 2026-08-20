@@ -8,7 +8,6 @@ from __future__ import annotations
 import base64
 import json
 import os
-from collections.abc import Mapping
 from typing import Any
 
 import pytest
@@ -66,13 +65,11 @@ class FakeTransport:
     def __init__(self, result: TransportResult) -> None:
         self.result = result
         self.attempts = 0
-        self.last_body: dict[str, Any] | None = None
+        self.last_payload: bytes | None = None
 
-    def __call__(
-        self, *, body: Mapping[str, Any], api_key: str, timeout_seconds: int
-    ) -> TransportResult:
+    def __call__(self, *, payload: bytes, api_key: str, timeout_seconds: int) -> TransportResult:
         self.attempts += 1
-        self.last_body = dict(body)
+        self.last_payload = payload
         return self.result
 
 
@@ -169,10 +166,13 @@ def test_wrong_missing_reasoning_context_stops() -> None:
     r = mutate(valid_response(), reasoning={"effort": REASONING_EFFORT, "context": "all_turns"})
     with pytest.raises(ResponsesProviderFailure, match="context"):
         parse_scoring_response(json.dumps(r).encode())
-    r2 = mutate(valid_response(), reasoning=None)
-    # context absent is acceptable; if returned it must match.
-    parsed = parse_scoring_response(json.dumps(r2).encode())
-    assert parsed.reasoning_context_returned is None
+    # missing reasoning object -> STOP (reasoning is required)
+    with pytest.raises(ResponsesProviderFailure, match="reasoning"):
+        parse_scoring_response(json.dumps(mutate(valid_response(), reasoning=None)).encode())
+    # missing context (reasoning present but no context key) -> STOP (required)
+    r2 = mutate(valid_response(), reasoning={"effort": REASONING_EFFORT})
+    with pytest.raises(ResponsesProviderFailure, match="context"):
+        parse_scoring_response(json.dumps(r2).encode())
 
 
 def test_wrong_effort_stops_when_returned() -> None:
@@ -385,6 +385,25 @@ def test_build_request_body_frozen() -> None:
     assert "conversation" not in body
     assert "background" not in body
     assert "stream" not in body
+
+
+def test_request_body_bytes_transmitted_and_hashed() -> None:
+    import hashlib
+
+    _env_key()
+    try:
+        t = FakeTransport(TransportResult(200, json.dumps(valid_response()).encode()))
+        client = make_client(t)
+        client.make_single_decision(_frozen_request())
+        sent = t.last_payload
+        assert sent is not None
+        resp = client.make_single_decision(_frozen_request())
+        md = resp.provider_metadata
+        assert hashlib.sha256(sent).hexdigest() == md["request_body_sha256"]
+        assert json.loads(sent) == build_request_body("COMMITMENT:the dock sensor is satisfied")
+        assert md["request_body_sha256"] == hashlib.sha256(sent).hexdigest()
+    finally:
+        _clear_key()
 
 
 # ---- transport zero-retry ----

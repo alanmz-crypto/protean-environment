@@ -23,6 +23,7 @@ Branch: feat/2026-08-19-stage0-freeze-prep
   - endpoint POST https://api.openai.com/v1/responses; store=false; max_output_tokens=128000; temperature omitted (None); seed none.
   - NO tools / previous_response_id / conversation / background / stream; ZERO client retries; one POST per case.
   - authoritative ModelConfiguration SHA-256: b3e21561ef3f84e2c38275f761ba8c7cbdf1e4a2ede04972f924f58d4827d9fa (src/protean_stage0/direct_config.py).
+  - Fail closed: object == response REQUIRED; reasoning REQUIRED with context == current_turn (missing context STOPS); returned model == gpt-5.6-luna REQUIRED; if effort returned it must be xhigh; exact transmitted request bytes are hashed (request_body_sha256).
 - REJECTED (historical evidence only): Codex CLI / codex app-server (codex exec --json and app-server could not guarantee exactly one upstream decision per turn; see stage0/CODEX-V147-SOURCE-AUDIT.md, APP-SERVER-TASK0-RETRY-STOP.md, ZERO-RETRY-INVESTIGATION-RESULT.md). codex_config.py / codex_adapter.py marked REJECTED/SUPERSEDED.
 
 ## Integration modules
