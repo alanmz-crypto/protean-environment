@@ -142,7 +142,7 @@ def load_frozen_artifacts() -> tuple[
     return case_set, generated, prompt, protocol, execution_plan
 
 
-def build_run_manifest(*, harness_revision: str, run_id_suffix: str = "") -> PreparedRun:
+def build_run_manifest(*, harness_revision: str, run_id: str | None = None) -> PreparedRun:
     case_set, generated, prompt, protocol, execution_plan = load_frozen_artifacts()
     model_cfg = direct_model_configuration()
     if model_cfg.sha256 != DIRECT_CONFIG_HASH:
@@ -155,7 +155,9 @@ def build_run_manifest(*, harness_revision: str, run_id_suffix: str = "") -> Pre
         primary_provenance=primary,
         reference_provenance=reference,
     )
-    run_id = f"stage0-{harness_revision[:10]}" + (f"-{run_id_suffix}" if run_id_suffix else "")
+    if run_id is None:
+        ts = datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
+        run_id = f"stage0-{harness_revision[:12]}-{ts}"
     manifest = RunManifest.create(
         protocol=protocol,
         execution_plan=execution_plan,
@@ -178,62 +180,127 @@ def build_run_manifest(*, harness_revision: str, run_id_suffix: str = "") -> Pre
 def write_manifest_artifact(prepared: PreparedRun, out_dir: Path) -> Path:
     out_dir.mkdir(parents=True, exist_ok=True)
     path = out_dir / f"run-manifest-{prepared.manifest.run_id}.json"
+    if path.exists():
+        raise RuntimeError(f"refusing to overwrite prepared manifest: {path}")
     path.write_bytes(prepared.manifest.to_exact_bytes())
     return path
 
 
-def seal_checks(prepared: PreparedRun, *, head: str, clean: bool) -> None:
+def _eval_prov_from_dict(raw: dict[str, Any]) -> EvaluatorProvenance:
+    return EvaluatorProvenance(
+        evaluator_name=raw["evaluator_name"],
+        author=raw["author"],
+        authored_at=raw["authored_at"],
+        grammar_version=raw["grammar_version"],
+        grammar_sha256=raw["grammar_sha256"],
+        independently_derived=raw["independently_derived"],
+        implementation_sha256=raw["implementation_sha256"],
+    )
+
+
+def reconstruct_run_manifest_from_bytes(raw: bytes) -> RunManifest:
+    """Rebuild the RunManifest EXACTLY from the prepared manifest bytes."""
+    data = json.loads(raw.decode("utf-8"))
+    return RunManifest(
+        protocol_version=data["protocol_version"],
+        protocol_sha256=data["protocol_sha256"],
+        execution_plan_version=data["execution_plan_version"],
+        execution_plan_sha256=data["execution_plan_sha256"],
+        case_set_sha256=data["case_set_sha256"],
+        scoring_prompt_sha256=data["scoring_prompt_sha256"],
+        parse_contract_sha256=data["parse_contract_sha256"],
+        case_count=data["case_count"],
+        positive_count=data["positive_count"],
+        negative_count=data["negative_count"],
+        model_configuration=dict(data["model_configuration"]),
+        model_configuration_sha256=data["model_configuration_sha256"],
+        primary_evaluator=_eval_prov_from_dict(data["primary_evaluator"]),
+        reference_evaluator=_eval_prov_from_dict(data["reference_evaluator"]),
+        harness_revision=data["harness_revision"],
+        timestamp=data["timestamp"],
+        run_id=data["run_id"],
+    )
+
+
+def load_prepared_manifest(path: Path) -> tuple[bytes, str, RunManifest]:
+    """Read the exact prepared manifest bytes, compute SHA, reconstruct valid."""
+    if not path.exists():
+        raise RuntimeError(f"prepared manifest not found: {path}")
+    raw = path.read_bytes()
+    sha = sha256_bytes(raw)
+    manifest = reconstruct_run_manifest_from_bytes(raw)
+    # round-trip must be exact so the reviewed bytes == consumed bytes.
+    if manifest.to_exact_bytes() != raw:
+        raise RuntimeError("prepared manifest bytes do not round-trip exactly")
+    if manifest.sha256 != sha:
+        raise RuntimeError("prepared manifest SHA mismatch")
+    manifest.validate_completeness()
+    return raw, sha, manifest
+
+
+def seal_reconstructed_run(manifest: RunManifest, *, head: str, clean: bool) -> None:
     """Refuse live execution unless the run is sealed to one immutable revision."""
     if not clean:
         raise RuntimeError("refusing live execution: working tree is dirty")
-    if head != prepared.manifest.harness_revision:
+    if head != manifest.harness_revision:
         raise RuntimeError("refusing live execution: HEAD != manifest.harness_revision")
-    # re-load frozen artifacts to confirm hashes unchanged (byte identity).
-    case_set, *rest = load_frozen_artifacts()
-    del rest
-    if case_set.sha256 != FROZEN_CASE_SET_SHA:
-        raise RuntimeError("refusing live execution: case-set hash changed")
+    case_set, generated, prompt, protocol, execution_plan = load_frozen_artifacts()
+    if case_set.sha256 != manifest.case_set_sha256:
+        raise RuntimeError("refusing live execution: case-set hash != manifest")
+    if prompt.sha256 != manifest.scoring_prompt_sha256:
+        raise RuntimeError("refusing live execution: scoring-prompt hash != manifest")
+    if protocol.sha256 != manifest.protocol_sha256:
+        raise RuntimeError("refusing live execution: protocol hash != manifest")
+    if execution_plan.sha256 != manifest.execution_plan_sha256:
+        raise RuntimeError("refusing live execution: execution-plan hash != manifest")
+    if manifest.parse_contract_sha256 != PLAIN_DECIMAL_V1_SHA256:
+        raise RuntimeError("refusing live execution: parse-contract hash != manifest")
     model_cfg = direct_model_configuration()
-    if model_cfg.sha256 != prepared.manifest.model_configuration_sha256:
-        raise RuntimeError("refusing live execution: model configuration hash changed")
+    if model_cfg.sha256 != manifest.model_configuration_sha256:
+        raise RuntimeError("refusing live execution: model configuration hash != manifest")
 
 
-def run_prepared_scoring(prepared: PreparedRun, api_key: str) -> tuple[RawResult, ...]:
+def run_prepared_scoring(manifest: RunManifest, api_key: str) -> tuple[RawResult, ...]:
     """Live scoring path (never exercised in PREPARE mode). One decision per case."""
     from .harness import run_single_decision_loop
 
     if not api_key:
-        # The presence of OPENAI_API_KEY is never sufficient for live authorization;
-        # it must also be absent/strict for a sealed run without a key.
         raise RuntimeError("OPENAI_API_KEY is required for live execution")
+    # Rebuild frozen case set / artifacts from immutable files; their hashes must
+    # match the manifest (already enforced by seal_reconstructed_run).
+    case_set, generated, prompt, protocol, execution_plan = load_frozen_artifacts()
+    bindings = ExperimentalBindings(prompt=prompt, model_configuration=direct_model_configuration())
+    primary = load_evaluator_provenance(PRIMARY_PROV_PATH, PRIMARY_IMPL_PATH)
+    reference = load_evaluator_provenance(REFERENCE_PROV_PATH, REFERENCE_IMPL_PATH)
+    agreement = verify_truth_agreement(generated, primary_provenance=primary, reference_provenance=reference)
     validated = validate_pre_run(
-        manifest=prepared.manifest,
-        case_set=prepared.case_set,
-        protocol=prepared.protocol,
-        execution_plan=prepared.execution_plan,
-        bindings=prepared.bindings,
-        agreement=prepared.agreement,
+        manifest=manifest,
+        case_set=case_set,
+        protocol=protocol,
+        execution_plan=execution_plan,
+        bindings=bindings,
+        agreement=agreement,
     )
     client = DirectResponsesClient()
     result = run_single_decision_loop(validated_run=validated, client=client)
     return result.raw_results
 
 
-def _manifest_json(prepared: PreparedRun) -> dict[str, Any]:
+def _manifest_json(manifest: RunManifest) -> dict[str, Any]:
     return {
-        "run_id": prepared.manifest.run_id,
-        "harness_revision": prepared.manifest.harness_revision,
-        "protocol_sha256": prepared.manifest.protocol_sha256,
-        "execution_plan_sha256": prepared.manifest.execution_plan_sha256,
-        "case_set_sha256": prepared.manifest.case_set_sha256,
-        "scoring_prompt_sha256": prepared.manifest.scoring_prompt_sha256,
-        "parse_contract_sha256": prepared.manifest.parse_contract_sha256,
-        "case_count": prepared.manifest.case_count,
-        "positive_count": prepared.manifest.positive_count,
-        "negative_count": prepared.manifest.negative_count,
-        "model_configuration": dict(prepared.manifest.model_configuration),
-        "model_configuration_sha256": prepared.manifest.model_configuration_sha256,
-        "manifest_sha256": prepared.manifest_sha256,
+        "run_id": manifest.run_id,
+        "harness_revision": manifest.harness_revision,
+        "protocol_sha256": manifest.protocol_sha256,
+        "execution_plan_sha256": manifest.execution_plan_sha256,
+        "case_set_sha256": manifest.case_set_sha256,
+        "scoring_prompt_sha256": manifest.scoring_prompt_sha256,
+        "parse_contract_sha256": manifest.parse_contract_sha256,
+        "case_count": manifest.case_count,
+        "positive_count": manifest.positive_count,
+        "negative_count": manifest.negative_count,
+        "model_configuration": dict(manifest.model_configuration),
+        "model_configuration_sha256": manifest.model_configuration_sha256,
+        "manifest_sha256": manifest.sha256,
     }
 
 
@@ -243,39 +310,51 @@ def run_cli(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--execute-live",
         action="store_true",
-        help="(SEALED) run live scoring (tied to the manifest harness revision).",
+        help="(SEALED) run live scoring against the EXACT prepared manifest (--manifest).",
+    )
+    parser.add_argument(
+        "--manifest",
+        default=None,
+        help="Path to the prepared manifest JSON to consume for live execution.",
     )
     parser.add_argument(
         "--out-dir",
         default=str(REPO_ROOT / "stage0/runs"),
-        help="Directory to write the run-manifest artifact.",
+        help="Directory to write run artifacts (ignored by git).",
     )
     args = parser.parse_args(argv)
 
-    head = current_git_head()
-    clean = working_tree_is_clean()
-    prepared = build_run_manifest(harness_revision=head)
-
-    # PREPARE mode: load + manifest + measure preflight, zero provider calls.
-    if not args.execute_live:
-        validate_pre_run(
-            manifest=prepared.manifest,
-            case_set=prepared.case_set,
-            protocol=prepared.protocol,
-            execution_plan=prepared.execution_plan,
-            bindings=prepared.bindings,
-            agreement=prepared.agreement,
+    if args.execute_live:
+        if not args.manifest:
+            parser.error("--execute-live requires --manifest <prepared-manifest.json>")
+        manifest_path = Path(args.manifest)
+        raw, sha, manifest = load_prepared_manifest(manifest_path)
+        # seal: never regenerate run id / timestamp / fields.
+        seal_reconstructed_run(
+            manifest,
+            head=current_git_head(),
+            clean=working_tree_is_clean(),
         )
-        prepared.manifest.validate_completeness()
-        manifest_path = write_manifest_artifact(prepared, Path(args.out_dir))
-        print(f"harness_revision={head}")
-        print(f"manifest_sha256={prepared.manifest_sha256}")
-        print(f"manifest_artifact={manifest_path}")
-        print("preflight=OK (zero provider calls)")
+        api_key = os.environ.get("OPENAI_API_KEY", "")
+        raw_results = run_prepared_scoring(manifest, api_key)
+        artifact = freeze_raw_results(manifest.run_id, raw_results)
+        out_dir = Path(args.out_dir)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        artifact_path = out_dir / f"raw-results-{manifest.run_id}.json"
+        artifact_path.write_bytes(artifact.content)
+        print(f"consumed_manifest_sha256={sha}")
+        print(f"run_id={manifest.run_id}")
+        print(f"harness_revision={manifest.harness_revision}")
+        print(f"raw_results_sha256={artifact.sha256}")
+        print(f"raw_results_artifact={artifact_path}")
         return 0
 
-    # LIVE mode: seal then score.
-    seal_checks(prepared, head=head, clean=clean)
+    # PREPARE mode: require clean tree; build manifest once; unique immutable ID;
+    # write exact bytes; never overwrite. ZERO provider calls.
+    if not working_tree_is_clean():
+        raise RuntimeError("prepare requires a clean working tree")
+    head = current_git_head()
+    prepared = build_run_manifest(harness_revision=head)
     validate_pre_run(
         manifest=prepared.manifest,
         case_set=prepared.case_set,
@@ -284,15 +363,13 @@ def run_cli(argv: list[str] | None = None) -> int:
         bindings=prepared.bindings,
         agreement=prepared.agreement,
     )
-    api_key = os.environ.get("OPENAI_API_KEY", "")
-    raw_results = run_prepared_scoring(prepared, api_key)
-    artifact = freeze_raw_results(prepared.manifest.run_id, raw_results)
-    out_dir = Path(args.out_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
-    artifact_path = out_dir / f"raw-results-{prepared.manifest.run_id}.json"
-    artifact_path.write_bytes(artifact.content)
-    print(f"raw_results_sha256={artifact.sha256}")
-    print(f"raw_results_artifact={artifact_path}")
+    prepared.manifest.validate_completeness()
+    manifest_path = write_manifest_artifact(prepared, Path(args.out_dir))
+    print(f"harness_revision={head}")
+    print(f"manifest_sha256={prepared.manifest_sha256}")
+    print(f"run_id={prepared.manifest.run_id}")
+    print(f"manifest_artifact={manifest_path}")
+    print("preflight=OK (zero provider calls)")
     return 0
 
 

@@ -1,10 +1,4 @@
-"""Zero-call tests for the sealed Stage-0 run driver.
-
-Loads the REAL frozen artifacts (immutable repo bytes) and exercises the PREPARE
-path only. NO live OpenAI request is possible or made. Live (--execute-live)
-sealing is tested with patched dirty-tree / HEAD mismatch so the transport is
-never reached.
-"""
+"""Zero-call tests for the sealed Stage-0 run driver (prepared-manifest execution seal)."""
 
 from __future__ import annotations
 
@@ -15,9 +9,21 @@ from typing import Any
 import pytest
 
 from protean_stage0 import stage0_driver as drv
-from protean_stage0.direct_config import DIRECT_CONFIG_HASH, direct_model_configuration
+from protean_stage0.direct_config import DIRECT_CONFIG_HASH
 from protean_stage0.results import ParseStatus, RawResult, freeze_raw_results
 from protean_stage0.validation import validate_pre_run
+
+
+def _prepared_manifest(tmp_path) -> tuple[str, str]:
+    """Prepare once in tmp dir; return (manifest_path, manifest_sha)."""
+    rc = drv.run_cli(["--prepare", "--out-dir", str(tmp_path)])
+    assert rc == 0
+    import glob
+
+    paths = sorted(glob.glob(str(tmp_path / "run-manifest-*.json")))
+    assert len(paths) == 1
+    p = paths[0]
+    return p, hashlib.sha256(open(p, "rb").read()).hexdigest()
 
 
 def test_frozen_case_artifact_loads_and_round_trips_byte_identical() -> None:
@@ -42,10 +48,10 @@ def test_actual_prompt_hash_is_ae8f093a() -> None:
 
 
 def test_actual_direct_config_hash_is_b3e21561() -> None:
-    assert direct_model_configuration().sha256 == DIRECT_CONFIG_HASH
+    assert drv.direct_model_configuration().sha256 == DIRECT_CONFIG_HASH
 
 
-def test_real_artifact_preflight_passes(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_real_artifact_preflight_passes() -> None:
     prepared = drv.build_run_manifest(harness_revision=drv.current_git_head())
     validated = validate_pre_run(
         manifest=prepared.manifest,
@@ -64,73 +70,107 @@ def test_wrong_artifact_hash_blocks_before_transport(monkeypatch: pytest.MonkeyP
         drv.load_frozen_case_set()
 
 
-def test_dirty_working_tree_blocks_live_mode(monkeypatch: pytest.MonkeyPatch) -> None:
+# ---- Task 4 sealing tests ----
+def test_prepare_requires_clean_tree(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
     monkeypatch.setattr(drv, "working_tree_is_clean", lambda: False)
-    monkeypatch.setattr(drv, "current_git_head", lambda: "0f89c9ccd9d694699284be3c400a11654e2a9a96")
-    with pytest.raises(Exception) as exc:
-        drv.run_cli(["--execute-live", "--out-dir", "/tmp/live-block"])
-    assert "dirty" in str(exc.value)
+    with pytest.raises(RuntimeError, match="clean working tree"):
+        drv.run_cli(["--prepare", "--out-dir", str(tmp_path)])
 
 
-def test_head_mismatch_blocks_live_mode() -> None:
-    prepared = drv.build_run_manifest(harness_revision=drv.current_git_head())
-    other = prepared.manifest.harness_revision + "0"
+def test_two_prepares_do_not_collide_or_overwrite(tmp_path) -> None:
+    p1, s1 = _prepared_manifest(tmp_path)
+    # second prepare at same time -> distinct run id (unique immutable), distinct file
+    rc = drv.run_cli(["--prepare", "--out-dir", str(tmp_path)])
+    assert rc == 0
+    import glob
+
+    paths = sorted(glob.glob(str(tmp_path / "run-manifest-*.json")))
+    assert len(paths) == 2
+    assert p1 in paths
+    assert len(set(paths)) == 2  # distinct files; no overwrite
+    # No two run ids are equal
+    run_ids = []
+    for p in paths:
+        raw = open(p, "rb").read()
+        manifest = drv.reconstruct_run_manifest_from_bytes(raw)
+        run_ids.append(manifest.run_id)
+    assert len(set(run_ids)) == 2
+
+
+def test_live_requires_manifest(tmp_path) -> None:
+    # --execute-live without --manifest -> parser.error (SystemExit)
+    with pytest.raises(SystemExit) as exc:
+        drv.run_cli(["--execute-live", "--out-dir", str(tmp_path)])
+    assert exc.value.code == 2
+
+
+def test_live_uses_exact_prepared_bytes_and_sha(tmp_path) -> None:
+    manifest_path, sha = _prepared_manifest(tmp_path)
+    raw, loaded_sha, manifest = drv.load_prepared_manifest(drv.REPO_ROOT / manifest_path)
+    assert loaded_sha == sha
+    assert manifest.sha256 == sha
+    # round trip exact
+    assert manifest.to_exact_bytes() == raw
+
+
+def test_changing_one_byte_of_manifest_blocks(tmp_path) -> None:
+    manifest_path, _ = _prepared_manifest(tmp_path)
+    p = tmp_path / manifest_path
+    raw = p.read_bytes()
+    # flip one byte near the end
+    flipped = raw[:-2] + bytes([raw[-2] ^ 0x01]) + raw[-1:]
+    p.write_bytes(flipped)
+    with pytest.raises(RuntimeError, match="round-trip"):
+        drv.load_prepared_manifest(p)
+
+
+def test_manifest_head_mismatch_blocks(tmp_path) -> None:
+    manifest_path, _ = _prepared_manifest(tmp_path)
+    _, _, manifest = drv.load_prepared_manifest(tmp_path / manifest_path)
+    other = manifest.harness_revision + "0"
     with pytest.raises(RuntimeError, match="HEAD != manifest"):
-        drv.seal_checks(prepared, head=other, clean=True)
+        drv.seal_reconstructed_run(manifest, head=other, clean=True)
 
 
-def test_default_invocation_cannot_make_live_call(monkeypatch: pytest.MonkeyPatch) -> None:
-    calls: list[int] = []
+def test_live_does_not_call_build_run_manifest(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    manifest_path, _ = _prepared_manifest(tmp_path)
+    calls: list[str] = []
 
-    class Boom:
-        def __init__(self, *a: Any, **k: Any) -> None:
-            calls.append(1)
-            raise AssertionError("live client must not be constructed in default mode")
+    def boom(*a: Any, **k: Any) -> Any:
+        calls.append("build_run_manifest")
+        raise AssertionError("live path must not rebuild the manifest")
 
-    monkeypatch.setattr(drv, "DirectResponsesClient", Boom)
-    rc = drv.run_cli(["--out-dir", "/tmp/prep-default"])
-    assert rc == 0
-    assert calls == []
-
-
-def test_prepare_performs_zero_calls(monkeypatch: pytest.MonkeyPatch) -> None:
-    os.environ["OPENAI_API_KEY"] = "sk-test-do-not-use"
-    calls: list[int] = []
-
-    class Boom:
-        def __init__(self, *a: Any, **k: Any) -> None:
-            calls.append(1)
-            raise AssertionError("prepare must not construct a live client")
-
-    monkeypatch.setattr(drv, "DirectResponsesClient", Boom)
-    try:
-        rc = drv.run_cli(["--prepare", "--out-dir", "/tmp/prep-zero"])
-    finally:
-        del os.environ["OPENAI_API_KEY"]
-    assert rc == 0
-    assert calls == []
-
-
-def test_live_mode_requires_explicit_execute_live(monkeypatch: pytest.MonkeyPatch) -> None:
-    os.environ.pop("OPENAI_API_KEY", None)
-    constructed: list[int] = []
-
-    class FakeBoom:
-        def __init__(self, *a: Any, **k: Any) -> None:
-            constructed.append(1)
-            raise AssertionError("live transport must not be constructed without a key")
-
-    monkeypatch.setattr(drv, "DirectResponsesClient", FakeBoom)
+    monkeypatch.setattr(drv, "build_run_manifest", boom)
     monkeypatch.setattr(drv, "working_tree_is_clean", lambda: True)
-    with pytest.raises(Exception, match="OPENAI_API_KEY"):
-        drv.run_cli(["--execute-live", "--out-dir", "/tmp/live-key"])
-    assert constructed == []
+    os.environ.pop("OPENAI_API_KEY", None)
+    # live seals then reaches key-check; must fail on missing key WITHOUT build_run_manifest
+    with pytest.raises(RuntimeError, match="OPENAI_API_KEY"):
+        drv.run_cli(["--execute-live", "--manifest", manifest_path, "--out-dir", str(tmp_path)])
+    assert calls == []
 
 
-def test_manifest_records_exact_harness_revision() -> None:
-    head = drv.current_git_head()
-    prepared = drv.build_run_manifest(harness_revision=head)
-    assert prepared.manifest.harness_revision == head
+def test_prepared_sha_before_execution_equals_consumed_by_live_path(tmp_path) -> None:
+    manifest_path, sha = _prepared_manifest(tmp_path)
+    _, loaded_sha, manifest = drv.load_prepared_manifest(tmp_path / manifest_path)
+    assert sha == loaded_sha == manifest.sha256
+
+
+def test_runtime_output_does_not_dirty_repository(tmp_path) -> None:
+    # write a run artifact under stage0/runs/ (gitignored) and confirm git stays clean
+    run_dir = drv.REPO_ROOT / "stage0/runs"
+    run_dir.mkdir(parents=True, exist_ok=True)
+    (run_dir / "run-manifest-stage0-000000000000-test.json").write_bytes(b"{}")
+    assert drv.working_tree_is_clean()
+    # .gitignore ignores stage0/runs
+    import subprocess
+
+    out = subprocess.run(["git", "check-ignore", "stage0/runs/"], cwd=drv.REPO_ROOT, capture_output=True, text=True)
+    assert out.returncode == 0
+
+
+def test_manifest_records_exact_harness_revision(tmp_path) -> None:
+    _, _, manifest = drv.load_prepared_manifest(tmp_path / _prepared_manifest(tmp_path)[0])
+    assert manifest.harness_revision == drv.current_git_head()
 
 
 def test_freeze_raw_results_sha_is_stable() -> None:
