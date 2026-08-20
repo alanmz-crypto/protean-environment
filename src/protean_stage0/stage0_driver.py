@@ -277,7 +277,9 @@ def run_prepared_scoring(manifest: RunManifest, api_key: str) -> tuple[RawResult
     bindings = ExperimentalBindings(prompt=prompt, model_configuration=direct_model_configuration())
     primary = load_evaluator_provenance(PRIMARY_PROV_PATH, PRIMARY_IMPL_PATH)
     reference = load_evaluator_provenance(REFERENCE_PROV_PATH, REFERENCE_IMPL_PATH)
-    agreement = verify_truth_agreement(generated, primary_provenance=primary, reference_provenance=reference)
+    agreement = verify_truth_agreement(
+        generated, primary_provenance=primary, reference_provenance=reference
+    )
     validated = validate_pre_run(
         manifest=manifest,
         case_set=case_set,

@@ -4,17 +4,18 @@ from __future__ import annotations
 
 import hashlib
 import os
+from pathlib import Path
 from typing import Any
 
 import pytest
 
 from protean_stage0 import stage0_driver as drv
-from protean_stage0.direct_config import DIRECT_CONFIG_HASH
+from protean_stage0.direct_config import DIRECT_CONFIG_HASH, direct_model_configuration
 from protean_stage0.results import ParseStatus, RawResult, freeze_raw_results
 from protean_stage0.validation import validate_pre_run
 
 
-def _prepared_manifest(tmp_path) -> tuple[str, str]:
+def _prepared_manifest(tmp_path: Any) -> tuple[str, str]:
     """Prepare once in tmp dir; return (manifest_path, manifest_sha)."""
     rc = drv.run_cli(["--prepare", "--out-dir", str(tmp_path)])
     assert rc == 0
@@ -48,7 +49,7 @@ def test_actual_prompt_hash_is_ae8f093a() -> None:
 
 
 def test_actual_direct_config_hash_is_b3e21561() -> None:
-    assert drv.direct_model_configuration().sha256 == DIRECT_CONFIG_HASH
+    assert direct_model_configuration().sha256 == DIRECT_CONFIG_HASH
 
 
 def test_real_artifact_preflight_passes() -> None:
@@ -71,13 +72,13 @@ def test_wrong_artifact_hash_blocks_before_transport(monkeypatch: pytest.MonkeyP
 
 
 # ---- Task 4 sealing tests ----
-def test_prepare_requires_clean_tree(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+def test_prepare_requires_clean_tree(monkeypatch: pytest.MonkeyPatch, tmp_path: Any) -> None:
     monkeypatch.setattr(drv, "working_tree_is_clean", lambda: False)
     with pytest.raises(RuntimeError, match="clean working tree"):
         drv.run_cli(["--prepare", "--out-dir", str(tmp_path)])
 
 
-def test_two_prepares_do_not_collide_or_overwrite(tmp_path) -> None:
+def test_two_prepares_do_not_collide_or_overwrite(tmp_path: Any) -> None:
     p1, s1 = _prepared_manifest(tmp_path)
     # second prepare at same time -> distinct run id (unique immutable), distinct file
     rc = drv.run_cli(["--prepare", "--out-dir", str(tmp_path)])
@@ -91,20 +92,20 @@ def test_two_prepares_do_not_collide_or_overwrite(tmp_path) -> None:
     # No two run ids are equal
     run_ids = []
     for p in paths:
-        raw = open(p, "rb").read()
+        raw = Path(p).read_bytes()
         manifest = drv.reconstruct_run_manifest_from_bytes(raw)
         run_ids.append(manifest.run_id)
     assert len(set(run_ids)) == 2
 
 
-def test_live_requires_manifest(tmp_path) -> None:
+def test_live_requires_manifest(tmp_path: Any) -> None:
     # --execute-live without --manifest -> parser.error (SystemExit)
     with pytest.raises(SystemExit) as exc:
         drv.run_cli(["--execute-live", "--out-dir", str(tmp_path)])
     assert exc.value.code == 2
 
 
-def test_live_uses_exact_prepared_bytes_and_sha(tmp_path) -> None:
+def test_live_uses_exact_prepared_bytes_and_sha(tmp_path: Any) -> None:
     manifest_path, sha = _prepared_manifest(tmp_path)
     raw, loaded_sha, manifest = drv.load_prepared_manifest(drv.REPO_ROOT / manifest_path)
     assert loaded_sha == sha
@@ -113,7 +114,7 @@ def test_live_uses_exact_prepared_bytes_and_sha(tmp_path) -> None:
     assert manifest.to_exact_bytes() == raw
 
 
-def test_changing_one_byte_of_manifest_blocks(tmp_path) -> None:
+def test_changing_one_byte_of_manifest_blocks(tmp_path: Any) -> None:
     manifest_path, _ = _prepared_manifest(tmp_path)
     p = tmp_path / manifest_path
     raw = p.read_bytes()
@@ -124,7 +125,7 @@ def test_changing_one_byte_of_manifest_blocks(tmp_path) -> None:
         drv.load_prepared_manifest(p)
 
 
-def test_manifest_head_mismatch_blocks(tmp_path) -> None:
+def test_manifest_head_mismatch_blocks(tmp_path: Any) -> None:
     manifest_path, _ = _prepared_manifest(tmp_path)
     _, _, manifest = drv.load_prepared_manifest(tmp_path / manifest_path)
     other = manifest.harness_revision + "0"
@@ -132,7 +133,9 @@ def test_manifest_head_mismatch_blocks(tmp_path) -> None:
         drv.seal_reconstructed_run(manifest, head=other, clean=True)
 
 
-def test_live_does_not_call_build_run_manifest(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+def test_live_does_not_call_build_run_manifest(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Any
+) -> None:
     manifest_path, _ = _prepared_manifest(tmp_path)
     calls: list[str] = []
 
@@ -149,13 +152,13 @@ def test_live_does_not_call_build_run_manifest(monkeypatch: pytest.MonkeyPatch, 
     assert calls == []
 
 
-def test_prepared_sha_before_execution_equals_consumed_by_live_path(tmp_path) -> None:
+def test_prepared_sha_before_execution_equals_consumed_by_live_path(tmp_path: Any) -> None:
     manifest_path, sha = _prepared_manifest(tmp_path)
     _, loaded_sha, manifest = drv.load_prepared_manifest(tmp_path / manifest_path)
     assert sha == loaded_sha == manifest.sha256
 
 
-def test_runtime_output_does_not_dirty_repository(tmp_path) -> None:
+def test_runtime_output_does_not_dirty_repository(tmp_path: Any) -> None:
     # write a run artifact under stage0/runs/ (gitignored) and confirm git stays clean
     run_dir = drv.REPO_ROOT / "stage0/runs"
     run_dir.mkdir(parents=True, exist_ok=True)
@@ -164,11 +167,13 @@ def test_runtime_output_does_not_dirty_repository(tmp_path) -> None:
     # .gitignore ignores stage0/runs
     import subprocess
 
-    out = subprocess.run(["git", "check-ignore", "stage0/runs/"], cwd=drv.REPO_ROOT, capture_output=True, text=True)
+    out = subprocess.run(
+        ["git", "check-ignore", "stage0/runs/"], cwd=drv.REPO_ROOT, capture_output=True, text=True
+    )
     assert out.returncode == 0
 
 
-def test_manifest_records_exact_harness_revision(tmp_path) -> None:
+def test_manifest_records_exact_harness_revision(tmp_path: Any) -> None:
     _, _, manifest = drv.load_prepared_manifest(tmp_path / _prepared_manifest(tmp_path)[0])
     assert manifest.harness_revision == drv.current_git_head()
 
