@@ -44,6 +44,7 @@ class Stage1AOriginRunManifest:
     case_set_sha256: str
     origin_prompt_sha256: str
     origin_response_contract_sha256: str
+    origin_response_contract_version: str
     direct_luna_config_sha256: str
     harness_revision: str
     expected_requests: int
@@ -69,6 +70,7 @@ class Stage1AOriginRunManifest:
             "ordered_structures": list(self.ordered_structures),
             "origin_prompt_sha256": self.origin_prompt_sha256,
             "origin_response_contract_sha256": self.origin_response_contract_sha256,
+            "origin_response_contract_version": self.origin_response_contract_version,
             "per_structure_case_ids": {k: list(v) for k, v in self.per_structure_case_ids.items()},
             "per_structure_commitment_hash": dict(self.per_structure_commitment_hash),
             "per_request_request_sha": dict(self.per_request_request_sha),
@@ -94,6 +96,7 @@ class Stage1AOriginRunManifest:
             case_set_sha256=data["case_set_sha256"],
             origin_prompt_sha256=data["origin_prompt_sha256"],
             origin_response_contract_sha256=data["origin_response_contract_sha256"],
+            origin_response_contract_version=data["origin_response_contract_version"],
             direct_luna_config_sha256=data["direct_luna_config_sha256"],
             harness_revision=data["harness_revision"],
             expected_requests=data["expected_requests"],

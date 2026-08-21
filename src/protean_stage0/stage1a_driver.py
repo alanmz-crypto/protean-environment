@@ -97,6 +97,8 @@ class Stage1APreparedRun:
     completed_run: Any = (
         None  # CompletedOriginRun (required; 5 standalone artifacts are NOT enough)
     )
+    expected_origin_manifest_sha256: str | None = None  # anchor into future Stage1AManifest
+    expected_completed_run_sha256: str | None = None
 
     def run(self) -> list[SingleScoreCall]:
         # 1) seal validation + MANDATORY real-origin coverage. Structure/coverage
@@ -167,6 +169,23 @@ class Stage1APreparedRun:
                 raise ValueError("origin artifact manifest SHA does not match completed run")
             if art.sha256 != completed.artifact_shas[art.request_index - 1]:
                 raise ValueError("origin artifact SHA does not match completed-run authority")
+        # 1c) Anchor calibration to the ACTUAL origin authority: when the future
+        #     Stage1AManifest binds the expected origin-manifest SHA and completed-run
+        #     SHA, those exact values must match the consumed completed authority.
+        if self.expected_origin_manifest_sha256 is not None and (
+            completed.manifest_sha256 != self.expected_origin_manifest_sha256
+        ):
+            raise ValueError("completed-run manifest SHA does not match expected origin manifest")
+        if self.expected_completed_run_sha256 is not None and (
+            completed.completed_run_sha256 != self.expected_completed_run_sha256
+        ):
+            raise ValueError("completed-run SHA does not match expected origin authority")
+        for art in self.origin_artifacts:
+            if art.request_index not in (1, 2, 3, 4, 5):
+                raise ValueError("origin artifact request index out of 1..5")
+            expected_struct = FROZEN_STRUCTURES[art.request_index - 1]
+            if art.structure is not expected_struct:
+                raise ValueError("origin artifact index/structure permutation")
         # 2) client construction (after passing seal + origin coverage + verifier
         #    + completed-run authority)
         client = self.client_factory()

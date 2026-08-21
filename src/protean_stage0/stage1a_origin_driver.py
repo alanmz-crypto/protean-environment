@@ -31,12 +31,13 @@ from typing import Any, Protocol
 from .artifacts import canonical_json_bytes, sha256_bytes
 from .direct_config import DIRECT_CONFIG_HASH
 from .grammar import FROZEN_STRUCTURES, StructureId
-from .provider_failure import ResponseContractFailure
+from .provider_failure import ResponseContractFailure, TransportFailure
 from .stage1a_authority import LoadedStage1AAuthority
 from .stage1a_origin import (
     ORIGIN_PROMPT,
     ORIGIN_PROMPT_SHA256,
     ORIGIN_RESPONSE_CONTRACT_SHA256,
+    ORIGIN_RESPONSE_CONTRACT_VERSION,
     OriginResponseContractFailure,
     OriginSessionArtifact,
     _parse_origin_adoptions_exact,
@@ -253,6 +254,7 @@ def build_origin_run_manifest(
         case_set_sha256=auth.case_set.sha256,
         origin_prompt_sha256=ORIGIN_PROMPT_SHA256,
         origin_response_contract_sha256=ORIGIN_RESPONSE_CONTRACT_SHA256,
+        origin_response_contract_version=ORIGIN_RESPONSE_CONTRACT_VERSION,
         direct_luna_config_sha256=DIRECT_CONFIG_HASH,
         harness_revision=harness_revision,
         expected_requests=5,
@@ -309,9 +311,19 @@ def validate_origin_run_manifest_seal(
         raise ValueError("origin artifact schema version mismatch")
     if manifest.origin_response_contract_sha256 != ORIGIN_RESPONSE_CONTRACT_SHA256:
         raise ValueError("origin response-contract version/SHA mismatch")
+    if manifest.origin_response_contract_version != ORIGIN_RESPONSE_CONTRACT_VERSION:
+        raise ValueError("origin response-contract version mismatch")
 
     # Recompute per-structure case IDs + commitment hashes + request SHAs from the
-    # freshly loaded authorities and compare exactly.
+    # freshly loaded authorities and compare exactly. Reject extra/missing keys.
+    expected_keys = {s.value for s in FROZEN_STRUCTURES}
+    for name, mapping in (
+        ("case IDs", manifest.per_structure_case_ids),
+        ("commitment hash", manifest.per_structure_commitment_hash),
+        ("request SHA", manifest.per_request_request_sha),
+    ):
+        if set(mapping) != expected_keys:
+            raise ValueError(f"origin seal per-structure map key mismatch: {name}")
     by_structure: dict[StructureId, list[str]] = {s: [] for s in FROZEN_STRUCTURES}
     by_commit: dict[str, bytes] = {}
     for case in auth.case_set.cases:
@@ -385,12 +397,39 @@ class AtomicEvidenceSink:
 
     out_dir: Path
 
+    def _batch_marker(self, batch: str) -> Path:
+        return self.out_dir / f"origin-batch-{batch}.started"
+
+    def start_batch(self, batch: str) -> None:
+        """Exclusive batch-start marker. If the batch already started, STOP before any transport."""
+        self.out_dir.mkdir(parents=True, exist_ok=True)
+        marker = self._batch_marker(batch)
+        if marker.exists():
+            raise ValueError(f"origin batch {batch} already started; no rerun permitted")
+        marker.write_bytes(b"started")
+
+    def artifact_path(self, batch: str, index: int) -> Path:
+        return self.out_dir / f"origin-artifact-{batch}-{index:02d}.json"
+
+    def write_artifact(self, artifact: OriginSessionArtifact) -> Path:
+        """Atomically persist a verified origin artifact (never overwrite)."""
+        self.out_dir.mkdir(parents=True, exist_ok=True)
+        path = self.artifact_path(artifact.batch_run_id, artifact.request_index)
+        if path.exists():
+            raise ValueError("refusing to overwrite an existing origin artifact")
+        tmp = path.with_suffix(".json.tmp")
+        tmp.write_bytes(artifact.to_exact_bytes())
+        tmp.replace(path)
+        return path
+
     def write(self, evidence: OriginRequestEvidence) -> Path:
         self.out_dir.mkdir(parents=True, exist_ok=True)
         path = (
             self.out_dir
             / f"origin-evidence-{evidence.batch_run_id}-r{evidence.request_index:02d}.json"
         )
+        if path.exists():
+            raise ValueError("refusing to overwrite existing origin evidence")
         tmp = path.with_suffix(".json.tmp")
         tmp.write_bytes(evidence.to_exact_bytes())
         tmp.replace(path)  # atomic rename
@@ -402,6 +441,8 @@ class AtomicEvidenceSink:
             raise ValueError("cannot persist a completed-run authority that is not 5/5/0")
         self.out_dir.mkdir(parents=True, exist_ok=True)
         path = self.out_dir / f"origin-completed-{completed.batch_run_id}.json"
+        if path.exists():
+            raise ValueError("refusing to overwrite an existing completed-run authority")
         tmp = path.with_suffix(".json.tmp")
         tmp.write_bytes(completed.to_exact_bytes())
         tmp.replace(path)
@@ -424,13 +465,15 @@ def execute_origin_run(
     auth: LoadedStage1AAuthority,
     batch_run_id: str,
     transport: OriginTransport,
-    evidence_sink: AtomicEvidenceSink | None = None,
+    evidence_sink: AtomicEvidenceSink,
 ) -> OriginRunResult:
     """Execute the sealed five-request run from an EXISTING sealed manifest.
 
-    Loads the manifest -> verifies expected SHA -> full seal against freshly loaded
-    authorities -> rederives request bytes -> compares every SHA -> ONLY THEN
-    constructs the provider transport. Any mismatch => 0 provider calls.
+    A run/evidence sink is MANDATORY; execution without one stops before any
+    transport. Loads the manifest -> verifies expected SHA -> full seal against
+    freshly loaded authorities -> rederives request bytes -> compares every SHA ->
+    exclusive batch-start marker -> ONLY THEN constructs the provider transport.
+    Any mismatch => 0 provider calls.
     """
     # REQUIRED before reconstruction: the raw bytes must hash to the expected SHA.
     if sha256_bytes(manifest_bytes) != expected_manifest_sha256:
@@ -447,7 +490,9 @@ def execute_origin_run(
     )
     if manifest.batch_run_id != batch_run_id:
         raise ValueError("provided batch/run ID does not match sealed manifest batch")
-
+    # Exclusive batch-start marker: once a manifest+batch has begun, attempting
+    # that batch again must STOP before any transport (crash leaves it non-resumable).
+    evidence_sink.start_batch(batch_run_id)
     # Rederive the five request specs from the freshly loaded authorities.
     _, specs = build_origin_run_manifest(
         auth=auth, harness_revision=actual_harness_revision, batch_run_id=batch_run_id
@@ -458,6 +503,26 @@ def execute_origin_run(
     for spec in specs:
         try:
             status, err_body, raw_response, md = transport(payload=spec.request_bytes)
+        except TransportFailure as exc:  # repository-typed transport failure -> TRANSPORT
+            ev = _evidence_for(
+                batch=batch_run_id,
+                manifest_sha=manifest.sha256,
+                spec=spec,
+                status=None,
+                err_body=None,
+                raw_response=None,
+                md={},
+                category=OriginFailureCategory.TRANSPORT,
+                success=False,
+                mechanical=f"{type(exc).__name__}: {exc}",
+            )
+            evidence_sink.write(ev)
+            return OriginRunResult(
+                status=OriginRunStatus.FAILED,
+                evidence=tuple(evidence) + (ev,),
+                artifacts=tuple(artifacts),
+                completed=None,
+            )
         except Exception as exc:  # unexpected transport/internal failure -> mechanical
             ev = _evidence_for(
                 batch=batch_run_id,
@@ -618,7 +683,22 @@ def execute_origin_run(
             expected_batch_run_id=batch_run_id,
             expected_request_index=spec.request_index,
         )
+        # Persist each verified artifact atomically BEFORE proceeding to the next.
+        artifact_path = evidence_sink.write_artifact(artifact)
+        persisted = OriginSessionArtifact._reconstruct(artifact_path.read_bytes())
+        if persisted.sha256 != artifact.sha256:
+            raise OriginRunUnresolved("persisted origin artifact did not round-trip exactly")
         artifacts.append(artifact)
+
+    # Completed authority only after all five artifact files exist and their SHAs
+    # match the in-memory artifacts.
+    for index, artifact in enumerate(artifacts, start=1):
+        ap = evidence_sink.artifact_path(batch_run_id, index)
+        if not ap.exists():
+            raise OriginRunUnresolved(f"missing durable artifact file for request {index}")
+        persisted = OriginSessionArtifact._reconstruct(ap.read_bytes())
+        if persisted.sha256 != artifact.sha256:
+            raise OriginRunUnresolved("artifact file SHA does not match in-memory artifact")
 
     # 5/5 success -> CompletedOriginRun binding the five artifact SHAs.
     completed = CompletedOriginRun(
@@ -629,8 +709,7 @@ def execute_origin_run(
         successes=5,
         failures=0,
     )
-    if evidence_sink is not None:
-        evidence_sink.write_completed(completed)  # persist only on 5/5 verified success
+    evidence_sink.write_completed(completed)  # persist only on 5/5 verified success
     return OriginRunResult(
         status=OriginRunStatus.COMPLETED,
         evidence=tuple(evidence),

@@ -221,6 +221,32 @@ class OriginSessionArtifact:
     def sha256(self) -> str:
         return sha256_bytes(self.to_exact_bytes())
 
+    @classmethod
+    def _reconstruct(cls, raw: bytes) -> OriginSessionArtifact:
+        """Rebuild the artifact exactly from its canonical bytes + SHA validation."""
+        data = json.loads(raw.decode("utf-8"))
+        records = tuple((cid, text.encode("utf-8")) for cid, text in data["commitment_records"])
+        obj = cls(
+            origin_run_id=data["origin_run_id"],
+            structure=StructureId(data["structure"]),
+            commitment_records=records,
+            commitment_sha256=data["commitment_sha256"],
+            model_configuration_sha256=data["model_configuration_sha256"],
+            request_sha256=data["request_sha256"],
+            raw_provider_response_sha256=data["raw_provider_response_sha256"],
+            raw_provider_response_bytes=base64.b64decode(data["raw_provider_response_base64"]),
+            final_output_sha256=data["final_output_sha256"],
+            final_output_bytes=data["final_output_bytes"].encode("utf-8"),
+            timestamp=data["timestamp"],
+            provider_metadata=dict(data["provider_metadata"]),
+            origin_manifest_sha256=data["origin_manifest_sha256"],
+            batch_run_id=data["batch_run_id"],
+            request_index=data["request_index"],
+        )
+        if obj.to_exact_bytes() != raw:
+            raise ValueError("origin artifact record is not canonical")
+        return obj
+
 
 def parse_raw_provider_response(raw_bytes: bytes) -> str:
     """Parse the raw Responses JSON through the strict direct-Luna contract.
