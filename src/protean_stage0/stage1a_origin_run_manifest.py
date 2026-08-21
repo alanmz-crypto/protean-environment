@@ -7,6 +7,7 @@ the loaded authorities before any provider access. Any mismatch => zero provider
 
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any
@@ -82,3 +83,26 @@ class Stage1AOriginRunManifest:
     @property
     def sha256(self) -> str:
         return sha256_bytes(self.to_exact_bytes())
+
+    @classmethod
+    def _reconstruct(cls, raw: bytes) -> Stage1AOriginRunManifest:
+        """Rebuild the manifest EXACTLY from its canonical bytes."""
+        data = json.loads(raw.decode("utf-8"))
+        return cls(
+            protocol_sha256=data["protocol_sha256"],
+            real_origin_amendment_sha256=data["real_origin_amendment_sha256"],
+            case_set_sha256=data["case_set_sha256"],
+            origin_prompt_sha256=data["origin_prompt_sha256"],
+            origin_response_contract_sha256=data["origin_response_contract_sha256"],
+            direct_luna_config_sha256=data["direct_luna_config_sha256"],
+            harness_revision=data["harness_revision"],
+            expected_requests=data["expected_requests"],
+            ordered_structures=tuple(data["ordered_structures"]),
+            per_structure_case_ids={k: tuple(v) for k, v in data["per_structure_case_ids"].items()},
+            per_structure_commitment_hash=dict(data["per_structure_commitment_hash"]),
+            per_request_request_sha=dict(data["per_request_request_sha"]),
+            zero_retries=data["zero_retries"],
+            batch_run_id=data["batch_run_id"],
+            manifest_version=data["manifest_version"],
+            artifact_schema_version=data["artifact_schema_version"],
+        )
