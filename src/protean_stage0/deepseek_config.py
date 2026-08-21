@@ -44,8 +44,9 @@ REASONING_EFFORT = "high"
 # effort, so representing its absence is truthful (never a false 0.0).
 TEMPERATURE: float | None = None
 SEED: int | None = None
-# One decimal comfortably fits the score response.
-MAX_OUTPUT_TOKENS = 16
+# High reasoning needs budget for reasoning tokens plus the final decimal; a
+# 16-token ceiling truncated every /v1/responses response to incomplete.
+MAX_OUTPUT_TOKENS = 2048
 
 # Endpoint / request shape
 ENDPOINT = DEEPSEEK_BASE_URL + "responses"

@@ -302,7 +302,7 @@ def test_request_body_contains_only_authorized_shape() -> None:
     assert body["model"] == MODEL
     assert body["input"] == "x"  # /v1/responses uses input, not messages
     assert body["reasoning"] == {"effort": "high"}
-    assert body["max_output_tokens"] == 16  # max_output_tokens, not max_tokens
+    assert body["max_output_tokens"] == 2048  # max_output_tokens, not max_tokens
     assert body["stream"] is False
     # Chat-completions-only and continuation/persistence controls must be absent.
     for forbidden in (
