@@ -221,6 +221,7 @@ def test_seal_mismatch_stops_before_any_scoring() -> None:
     case_set = freeze_stage1a_case_set(_cases())
     protocol = FrozenArtifact.from_bytes("protocol", b"PROTOCOL")
     amendment = FrozenArtifact.from_bytes("amendment", b"AMEND")
+    real_origin = FrozenArtifact.from_bytes("real-origin", b"REAL-ORIGIN")
     prompt = FrozenArtifact.from_bytes("prompt", b"PROMPT")
     primary = _prov("primary")
     reference = _prov("reference")
@@ -228,6 +229,7 @@ def test_seal_mismatch_stops_before_any_scoring() -> None:
     manifest = Stage1AManifest.create(
         protocol=protocol,
         futility_amendment=amendment,
+        real_origin_amendment=real_origin,
         case_set=case_set,
         scoring_prompt=prompt,
         parse_contract_sha256="0" * 64,
@@ -245,6 +247,7 @@ def test_seal_mismatch_stops_before_any_scoring() -> None:
             actual_harness_revision="HEAD",
             protocol=protocol,
             futility_amendment=amendment,
+            real_origin_amendment=real_origin,
             case_set=case_set,
             scoring_prompt=tampered_prompt,
             parse_contract_sha256="0" * 64,
@@ -278,12 +281,13 @@ def _dummy_config() -> ModelConfiguration:
 
 
 # ---- hardening: harness-revision seal ----
-def _manifest_and_docs(head: str = "HEAD") -> tuple[Any, Any, Any, Any, Any, Any]:
+def _manifest_and_docs(head: str = "HEAD") -> tuple[Any, Any, Any, Any, Any, Any, Any]:
     from protean_stage0.stage1a_manifest import Stage1AManifest
 
     case_set = freeze_stage1a_case_set(_cases())
     protocol = FrozenArtifact.from_bytes("protocol", b"PROTOCOL")
     amendment = FrozenArtifact.from_bytes("amendment", b"AMEND")
+    real_origin = FrozenArtifact.from_bytes("real-origin", b"REAL-ORIGIN")
     prompt = FrozenArtifact.from_bytes("prompt", b"PROMPT")
     primary = _prov("primary2")
     reference = _prov("reference2")
@@ -291,6 +295,7 @@ def _manifest_and_docs(head: str = "HEAD") -> tuple[Any, Any, Any, Any, Any, Any
     manifest = Stage1AManifest.create(
         protocol=protocol,
         futility_amendment=amendment,
+        real_origin_amendment=real_origin,
         case_set=case_set,
         scoring_prompt=prompt,
         parse_contract_sha256="0" * 64,
@@ -301,16 +306,17 @@ def _manifest_and_docs(head: str = "HEAD") -> tuple[Any, Any, Any, Any, Any, Any
         timestamp="t",
         run_id="R2",
     )
-    return manifest, protocol, amendment, prompt, case_set, model
+    return manifest, protocol, amendment, real_origin, prompt, case_set, model
 
 
 def test_seal_passes_when_harness_revision_matches() -> None:
-    manifest, protocol, amendment, prompt, case_set, model = _manifest_and_docs("HEAD")
+    manifest, protocol, amendment, real_origin, prompt, case_set, model = _manifest_and_docs("HEAD")
     validate_stage1a_manifest_seal(
         manifest,
         actual_harness_revision="HEAD",
         protocol=protocol,
         futility_amendment=amendment,
+        real_origin_amendment=real_origin,
         case_set=case_set,
         scoring_prompt=prompt,
         parse_contract_sha256="0" * 64,
@@ -319,13 +325,14 @@ def test_seal_passes_when_harness_revision_matches() -> None:
 
 
 def test_stale_manifest_head_fails_before_client() -> None:
-    manifest, protocol, amendment, prompt, case_set, model = _manifest_and_docs("HEAD")
+    manifest, protocol, amendment, real_origin, prompt, case_set, model = _manifest_and_docs("HEAD")
     with pytest.raises(ValueError, match="harness revision"):
         validate_stage1a_manifest_seal(
             manifest,
             actual_harness_revision="STALE-HEAD",
             protocol=protocol,
             futility_amendment=amendment,
+            real_origin_amendment=real_origin,
             case_set=case_set,
             scoring_prompt=prompt,
             parse_contract_sha256="0" * 64,

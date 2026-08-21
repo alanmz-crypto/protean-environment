@@ -91,11 +91,19 @@ class Stage1APreparedRun:
     model_configuration: ModelConfiguration
     seal: Any  # callable that raises on mismatch (validate_stage1a_manifest_seal)
     client_factory: Any  # callable returning a ModelClient
+    origin_artifacts: tuple[Any, ...] = ()
 
     def run(self) -> list[SingleScoreCall]:
-        # 1) seal validation (raises on any mismatch; client not yet constructed)
+        # 1) seal validation + real-origin coverage (raises on any mismatch; the
+        #    calibration scoring client is NOT constructed until 5/5 successful
+        #    real-origin artifacts cover all 60 cases)
         self.seal()
-        # 2) client construction (after a passing seal)
+        if self.origin_artifacts:
+            require_real_origin_coverage(
+                self.origin_artifacts,
+                frozenset(c.generated.spec.case_id for c in self.cases),
+            )
+        # 2) client construction (after a passing seal + origin coverage)
         client = self.client_factory()
         # 3) scoring (one decision call per case)
         loop = Stage1AScoringLoop(
@@ -105,3 +113,36 @@ class Stage1APreparedRun:
             client=client,
         )
         return loop.run()
+
+
+def require_real_origin_coverage(artifacts: tuple[Any, ...], all_case_ids: frozenset[str]) -> None:
+    """Require a sealed successful real origin artifact for every case.
+
+    Exactly 5 origin sessions (one per familiar structure), each covering 12
+    adopted cases, together covering all 60 case IDs exactly once. Fewer than 5
+    (or any malformed/partial artifact) raises so the calibration scoring client
+    is never constructed.
+    """
+    from .grammar import FROZEN_STRUCTURES
+
+    if len(artifacts) != len(FROZEN_STRUCTURES):
+        raise ValueError(
+            f"Stage-1A requires exactly {len(FROZEN_STRUCTURES)} origin sessions, "
+            f"got {len(artifacts)}"
+        )
+    covered: dict[str, str] = {}
+    for art in artifacts:
+        # Each artifact is an OriginSessionArtifact; validate its 12/12 adoption.
+        for cid in art.case_ids:
+            if cid in covered:
+                raise ValueError(f"duplicate origin coverage for case {cid}")
+            if cid not in all_case_ids:
+                raise ValueError(f"origin covers unknown case {cid}")
+            if not art.adoption.get(cid, False):
+                raise ValueError(f"non-adopted origin case {cid}")
+            covered[cid] = art.origin_run_id
+    missing = all_case_ids - set(covered)
+    if missing:
+        raise ValueError(
+            f"origin coverage incomplete; {len(missing)} cases unowned: {sorted(missing)[:5]}"
+        )

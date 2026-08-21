@@ -32,6 +32,11 @@ class Stage1AManifest:
     protocol_version: str
     futility_amendment_sha256: str
     futility_amendment_version: str
+    real_origin_amendment_sha256: str
+    real_origin_amendment_version: str
+    origin_mechanism_version: str
+    expected_origin_sessions: int
+    origin_response_contract: str
     case_set_sha256: str
     scoring_prompt_sha256: str
     parse_contract_sha256: str
@@ -56,6 +61,7 @@ class Stage1AManifest:
         *,
         protocol: FrozenArtifact,
         futility_amendment: FrozenArtifact,
+        real_origin_amendment: FrozenArtifact,
         case_set: FrozenCaseSet,
         scoring_prompt: FrozenArtifact,
         parse_contract_sha256: str,
@@ -65,6 +71,9 @@ class Stage1AManifest:
         reference_evaluator: EvaluatorProvenance,
         timestamp: str,
         run_id: str,
+        origin_mechanism_version: str = "stage1a-real-origin-v1",
+        origin_response_contract: str = "stage1a-origin-adoption-v1",
+        expected_origin_sessions: int = 5,
     ) -> Stage1AManifest:
         if len(case_set.cases) != STAGE1A_TOTAL:
             raise ValueError("Stage-1A manifest requires exactly 60 cases")
@@ -79,6 +88,11 @@ class Stage1AManifest:
             protocol_version="prospective-control-v1.0",
             futility_amendment_sha256=futility_amendment.sha256,
             futility_amendment_version="stage1-futility-shared-score-v1.0.1-r1",
+            real_origin_amendment_sha256=real_origin_amendment.sha256,
+            real_origin_amendment_version="stage1a-real-origin-v1.0.2-r1",
+            origin_mechanism_version=origin_mechanism_version,
+            expected_origin_sessions=expected_origin_sessions,
+            origin_response_contract=origin_response_contract,
             case_set_sha256=case_set.sha256,
             scoring_prompt_sha256=scoring_prompt.sha256,
             parse_contract_sha256=parse_contract_sha256,
@@ -114,6 +128,11 @@ class Stage1AManifest:
             "protocol_version": self.protocol_version,
             "futility_amendment_sha256": self.futility_amendment_sha256,
             "futility_amendment_version": self.futility_amendment_version,
+            "real_origin_amendment_sha256": self.real_origin_amendment_sha256,
+            "real_origin_amendment_version": self.real_origin_amendment_version,
+            "origin_mechanism_version": self.origin_mechanism_version,
+            "expected_origin_sessions": self.expected_origin_sessions,
+            "origin_response_contract": self.origin_response_contract,
             "case_set_sha256": self.case_set_sha256,
             "scoring_prompt_sha256": self.scoring_prompt_sha256,
             "parse_contract_sha256": self.parse_contract_sha256,
@@ -145,6 +164,10 @@ class Stage1AManifest:
             self.protocol_version,
             self.futility_amendment_sha256,
             self.futility_amendment_version,
+            self.real_origin_amendment_sha256,
+            self.real_origin_amendment_version,
+            self.origin_mechanism_version,
+            self.origin_response_contract,
             self.case_set_sha256,
             self.scoring_prompt_sha256,
             self.parse_contract_sha256,
@@ -155,6 +178,8 @@ class Stage1AManifest:
         )
         if not all(required):
             raise ValueError("Stage-1A manifest contains an empty required field")
+        if self.expected_origin_sessions != 5:
+            raise ValueError("Stage-1A manifest must require exactly 5 origin sessions")
         if (self.total_cases, self.positive_count, self.negative_count) != (60, 30, 30):
             raise ValueError("Stage-1A manifest must record 60/30/30")
         if (self.per_structure, self.per_class_per_structure) != (12, 6):
@@ -167,11 +192,13 @@ def validate_stage1a_manifest_seal(
     actual_harness_revision: str,
     protocol: FrozenArtifact,
     futility_amendment: FrozenArtifact,
+    real_origin_amendment: FrozenArtifact,
     case_set: FrozenCaseSet,
     scoring_prompt: FrozenArtifact,
     parse_contract_sha256: str,
     model_configuration: ModelConfiguration,
     cross_session_rep_version: str = CROSS_SESSION_REP_VERSION,
+    expected_origin_sessions: int = 5,
 ) -> None:
     """Fail closed (raise) before any provider call on any Stage-1A mismatch.
 
@@ -182,6 +209,10 @@ def validate_stage1a_manifest_seal(
     checks = {
         "protocol": (manifest.protocol_sha256, protocol.sha256),
         "futility amendment": (manifest.futility_amendment_sha256, futility_amendment.sha256),
+        "real-origin amendment": (
+            manifest.real_origin_amendment_sha256,
+            real_origin_amendment.sha256,
+        ),
         "case set": (manifest.case_set_sha256, case_set.sha256),
         "scoring prompt": (manifest.scoring_prompt_sha256, scoring_prompt.sha256),
         "parse contract": (manifest.parse_contract_sha256, parse_contract_sha256),
@@ -197,4 +228,6 @@ def validate_stage1a_manifest_seal(
         raise ValueError("Stage-1A seal mismatch: harness revision")
     if manifest.cross_session_rep_version != cross_session_rep_version:
         raise ValueError("Stage-1A seal mismatch: cross-session representation version")
+    if manifest.expected_origin_sessions != expected_origin_sessions:
+        raise ValueError("Stage-1A seal mismatch: expected origin sessions")
     manifest.validate_completeness()
