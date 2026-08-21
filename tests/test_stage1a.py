@@ -46,6 +46,13 @@ def _cases() -> tuple[Any, ...]:
     return build_stage1a_cases(template_bank=_bank())
 
 
+def _ratified_origin_amendment() -> FrozenArtifact:
+    return FrozenArtifact.from_bytes(
+        "ratified-real-origin",
+        (REPO / "docs/RATIFIED-AMENDMENT-stage1a-real-origin-v1.0.2-r1.md").read_bytes(),
+    )
+
+
 def _scored(pos_score: float, neg_score: float, n_per_class: int = 5) -> tuple[ScoredCase, ...]:
     """Hand-built deterministic scored cases: positives at pos_score, negatives at neg_score."""
     return tuple(
@@ -221,7 +228,7 @@ def test_seal_mismatch_stops_before_any_scoring() -> None:
     case_set = freeze_stage1a_case_set(_cases())
     protocol = FrozenArtifact.from_bytes("protocol", b"PROTOCOL")
     amendment = FrozenArtifact.from_bytes("amendment", b"AMEND")
-    real_origin = FrozenArtifact.from_bytes("real-origin", b"REAL-ORIGIN")
+    real_origin = _ratified_origin_amendment()
     prompt = FrozenArtifact.from_bytes("prompt", b"PROMPT")
     primary = _prov("primary")
     reference = _prov("reference")
@@ -281,7 +288,7 @@ def _manifest_and_docs(head: str = "HEAD") -> tuple[Any, Any, Any, Any, Any, Any
     case_set = freeze_stage1a_case_set(_cases())
     protocol = FrozenArtifact.from_bytes("protocol", b"PROTOCOL")
     amendment = FrozenArtifact.from_bytes("amendment", b"AMEND")
-    real_origin = FrozenArtifact.from_bytes("real-origin", b"REAL-ORIGIN")
+    real_origin = _ratified_origin_amendment()
     prompt = FrozenArtifact.from_bytes("prompt", b"PROMPT")
     primary = _prov("primary2")
     reference = _prov("reference2")

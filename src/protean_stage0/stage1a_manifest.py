@@ -31,6 +31,11 @@ from .stage1a_origin import (
     ORIGIN_RESPONSE_CONTRACT_VERSION,
 )
 
+# Authoritative ratified real-origin amendment artifact (not the DRAFT).
+RATIFIED_REAL_ORIGIN_AMENDMENT_SHA256 = (
+    "404bada3218b5d9ce989d19e9b19ad96bb470cc39197e6ee9236c916e032718a"
+)
+
 
 @dataclass(frozen=True, slots=True)
 class Stage1AManifest:
@@ -87,6 +92,10 @@ class Stage1AManifest:
     ) -> Stage1AManifest:
         if len(case_set.cases) != STAGE1A_TOTAL:
             raise ValueError("Stage-1A manifest requires exactly 60 cases")
+        if real_origin_amendment.sha256 != RATIFIED_REAL_ORIGIN_AMENDMENT_SHA256:
+            raise ValueError(
+                "Stage-1A manifest must bind the RATIFIED real-origin amendment, not the DRAFT"
+            )
         from .generator import GeneratedCaseSpec
         from .stage1a_cases import validate_stage1a_allocation
 
