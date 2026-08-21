@@ -160,12 +160,14 @@ def compute_stage1a_report(
     if not scored_cases or len(scored_cases) < 2:
         raise ValueError("Stage-1A requires scored calibration cases")
     evals = evaluate_all_thresholds(scored_cases)
+    if len(evals) != 17:
+        raise ValueError("Stage-1A report requires all 17 frozen thresholds to be evaluated")
     selected = select_c_threshold(evals)
-    second_best = None
-    max_ba = max(e.balanced_accuracy for e in evals)
-    near = [e for e in evals if abs(e.balanced_accuracy - max_ba) < 1e-9]
-    if len(near) >= 2:
-        second_best = near[1].threshold
+    # Second-best: remove the selected threshold, then re-apply the SAME frozen
+    # ranking rule over the remaining 16. Because 17 were evaluated, second-best
+    # is always present.
+    remaining = tuple(e for e in evals if e.threshold != selected)
+    second_best = select_c_threshold(remaining)
     within = within_1pp_of_max(evals)
     projection = determine_stage1b_fate(selected)
     # B threshold is fixed and must equal the frozen constant.

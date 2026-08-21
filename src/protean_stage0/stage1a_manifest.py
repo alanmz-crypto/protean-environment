@@ -164,6 +164,7 @@ class Stage1AManifest:
 def validate_stage1a_manifest_seal(
     manifest: Stage1AManifest,
     *,
+    actual_harness_revision: str,
     protocol: FrozenArtifact,
     futility_amendment: FrozenArtifact,
     case_set: FrozenCaseSet,
@@ -172,7 +173,12 @@ def validate_stage1a_manifest_seal(
     model_configuration: ModelConfiguration,
     cross_session_rep_version: str = CROSS_SESSION_REP_VERSION,
 ) -> None:
-    """Fail closed (raise) before any provider call on any Stage-1A mismatch."""
+    """Fail closed (raise) before any provider call on any Stage-1A mismatch.
+
+    ``actual_harness_revision`` is the executing harness revision (e.g. current
+    git HEAD). It must equal ``manifest.harness_revision`` exactly; a stale or
+    substituted manifest revision stops before any model client is constructed.
+    """
     checks = {
         "protocol": (manifest.protocol_sha256, protocol.sha256),
         "futility amendment": (manifest.futility_amendment_sha256, futility_amendment.sha256),
@@ -187,6 +193,8 @@ def validate_stage1a_manifest_seal(
     for name, (recorded, actual) in checks.items():
         if recorded != actual:
             raise ValueError(f"Stage-1A seal mismatch: {name}")
+    if actual_harness_revision != manifest.harness_revision:
+        raise ValueError("Stage-1A seal mismatch: harness revision")
     if manifest.cross_session_rep_version != cross_session_rep_version:
         raise ValueError("Stage-1A seal mismatch: cross-session representation version")
     manifest.validate_completeness()

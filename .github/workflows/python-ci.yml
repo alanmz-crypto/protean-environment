@@ -1,0 +1,55 @@
+name: python-ci
+
+# Stage-1A verification gate (no secrets, no provider access, no model calls).
+# Runs the same gate we require locally and in scripts/verify-stage0.sh:
+#   - pytest
+#   - mypy
+#   - ruff check
+#   - ruff format --check
+#   - compileall
+#   - git diff --check
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.12"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      # Tool versions pinned to the versions verified against this repo
+      # (recorded 2026-08-21): pytest 9.1.1, mypy 2.1.0, ruff 0.16.3.
+      # ruff 0.16.3 is used because this repo gates on it locally; the
+      # devcontainer pinned 0.12.8, which the actual environment contradicts.
+      - name: Install pinned tools
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install pytest==9.1.1 mypy==2.1.0 ruff==0.16.3
+
+      - name: pytest
+        run: PYTHONPATH=src python -m pytest -q
+
+      - name: mypy
+        run: mypy src tests
+
+      - name: ruff check
+        run: ruff check .
+
+      - name: ruff format check
+        run: ruff format --check .
+
+      - name: compileall
+        run: python -m compileall -q src tests scripts
+
+      - name: git diff check
+        run: git diff --check

@@ -242,6 +242,7 @@ def test_seal_mismatch_stops_before_any_scoring() -> None:
     with pytest.raises(ValueError, match="scoring prompt"):
         validate_stage1a_manifest_seal(
             manifest,
+            actual_harness_revision="HEAD",
             protocol=protocol,
             futility_amendment=amendment,
             case_set=case_set,
@@ -274,3 +275,188 @@ def _dummy_config() -> ModelConfiguration:
         max_output_length=16,
         api_parameters={},
     )
+
+
+# ---- hardening: harness-revision seal ----
+def _manifest_and_docs(head: str = "HEAD") -> tuple[Any, Any, Any, Any, Any, Any]:
+    from protean_stage0.stage1a_manifest import Stage1AManifest
+
+    case_set = freeze_stage1a_case_set(_cases())
+    protocol = FrozenArtifact.from_bytes("protocol", b"PROTOCOL")
+    amendment = FrozenArtifact.from_bytes("amendment", b"AMEND")
+    prompt = FrozenArtifact.from_bytes("prompt", b"PROMPT")
+    primary = _prov("primary2")
+    reference = _prov("reference2")
+    model = _dummy_config()
+    manifest = Stage1AManifest.create(
+        protocol=protocol,
+        futility_amendment=amendment,
+        case_set=case_set,
+        scoring_prompt=prompt,
+        parse_contract_sha256="0" * 64,
+        model_configuration=model,
+        harness_revision=head,
+        primary_evaluator=primary,
+        reference_evaluator=reference,
+        timestamp="t",
+        run_id="R2",
+    )
+    return manifest, protocol, amendment, prompt, case_set, model
+
+
+def test_seal_passes_when_harness_revision_matches() -> None:
+    manifest, protocol, amendment, prompt, case_set, model = _manifest_and_docs("HEAD")
+    validate_stage1a_manifest_seal(
+        manifest,
+        actual_harness_revision="HEAD",
+        protocol=protocol,
+        futility_amendment=amendment,
+        case_set=case_set,
+        scoring_prompt=prompt,
+        parse_contract_sha256="0" * 64,
+        model_configuration=model,
+    )
+
+
+def test_stale_manifest_head_fails_before_client() -> None:
+    manifest, protocol, amendment, prompt, case_set, model = _manifest_and_docs("HEAD")
+    with pytest.raises(ValueError, match="harness revision"):
+        validate_stage1a_manifest_seal(
+            manifest,
+            actual_harness_revision="STALE-HEAD",
+            protocol=protocol,
+            futility_amendment=amendment,
+            case_set=case_set,
+            scoring_prompt=prompt,
+            parse_contract_sha256="0" * 64,
+            model_configuration=model,
+        )
+
+
+# ---- hardening: frozen decimal score contract ----
+def _one_case_loop(raw: bytes) -> Any:
+    """Return a Stage1AScoringLoop over a single case whose client returns ``raw``."""
+    from protean_stage0.harness import ModelResponse
+    from protean_stage0.stage1a_driver import Stage1AScoringLoop
+
+    class _C:
+        def make_single_decision(self, request: Any) -> Any:
+            return ModelResponse(raw, {})
+
+    return Stage1AScoringLoop(
+        cases=_cases()[:1],
+        scoring_prompt=FrozenArtifact.from_bytes("p", b"x"),
+        model_configuration=_dummy_config(),
+        client=_C(),
+    )
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        b"1",
+        b"0.5",
+        b" 0.73",
+        b"0.73 ",
+        b"0.730\n",
+        b"0.7.3",
+        b"0.73001",
+        b"the score is 0.73",
+        b"1e-1",
+    ],
+)
+def test_driver_rejects_non_plain_decimal_scores(bad: bytes) -> None:
+    loop = _one_case_loop(bad)
+    with pytest.raises(ValueError, match="non-decimal score"):
+        loop.run()
+
+
+@pytest.mark.parametrize("good", [b"0.00", b"0.73", b"1.00", b"0.73\n"])
+def test_driver_accepts_plain_decimal_scores(good: bytes) -> None:
+    out = _one_case_loop(good).run()
+    assert len(out) == 1
+    assert out[0].raw_score in (0.0, 0.73, 1.0)
+
+
+# ---- hardening: second-best threshold ----
+def test_second_best_present_when_17_evaluated() -> None:
+    report = compute_stage1a_report(_scored(0.90, 0.10))
+    assert report.second_best_threshold is not None
+
+
+def test_second_best_excludes_selected_and_rerates_remaining() -> None:
+    # Unique best: POS=0.90/NEG=0.70 selects 0.75; second-best is the winner of the
+    # same rule over the remaining 16 (0.80), not the selected value itself.
+    report = compute_stage1a_report(_scored(0.90, 0.70))
+    assert report.selected_threshold == 0.75
+    assert report.second_best_threshold == 0.80
+    assert report.second_best_threshold != report.selected_threshold
+    assert report.second_best_threshold in set(THRESHOLD_GRID) - {report.selected_threshold}
+
+
+def test_second_best_tied_best_uses_same_ranking_over_remaining() -> None:
+    # Perfect separation over a wide band: selected = closest to 0.50; with the
+    # selected removed, second-best is the next closest-to-0.50 among the rest.
+    report = compute_stage1a_report(_scored(0.90, 0.10))
+    assert report.selected_threshold == 0.50
+    assert report.second_best_threshold is not None
+    # The second-best of an all-1.0-BA band (0.10..0.90) after removing 0.50 is the
+    # threshold closest to 0.50 among the remainder => 0.55 (tie-to-higher over 0.45).
+    assert report.second_best_threshold == 0.55
+
+
+# ---- hardening: integrated preflight ordering ----
+def test_preflight_ordering_seal_then_client_then_scoring() -> None:
+    from protean_stage0.stage1a_driver import Stage1APreparedRun
+
+    constructed: list[str] = []
+    calls: list[str] = []
+
+    class _Client:
+        def make_single_decision(self, request: Any) -> Any:
+            calls.append("call")
+            from protean_stage0.harness import ModelResponse
+
+            return ModelResponse(b"0.73", {})
+
+    def factory() -> Any:
+        constructed.append("client")
+        return _Client()
+
+    cases = _cases()
+    prepared = Stage1APreparedRun(
+        cases=cases,
+        scoring_prompt=FrozenArtifact.from_bytes("p", b"x"),
+        model_configuration=_dummy_config(),
+        seal=lambda: None,
+        client_factory=factory,
+    )
+    prepared.run()
+    assert constructed == ["client"]
+    assert len(calls) == len(cases)  # one call per case, after a single client
+
+
+def test_seal_mismatch_yields_zero_clients_and_zero_calls() -> None:
+    from protean_stage0.stage1a_driver import Stage1APreparedRun
+
+    constructed: list[str] = []
+    calls: list[str] = []
+
+    def _client_factory() -> object:
+        constructed.append("client")
+        return object()
+
+    def _seal_boom() -> None:
+        raise ValueError("Stage-1A seal mismatch: harness revision")
+
+    prepared = Stage1APreparedRun(
+        cases=_cases(),
+        scoring_prompt=FrozenArtifact.from_bytes("p", b"x"),
+        model_configuration=_dummy_config(),
+        seal=_seal_boom,
+        client_factory=_client_factory,
+    )
+    with pytest.raises(ValueError, match="seal mismatch"):
+        prepared.run()
+    assert constructed == []  # no client built
+    assert calls == []

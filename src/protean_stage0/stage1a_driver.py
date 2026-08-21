@@ -58,13 +58,14 @@ class Stage1AScoringLoop:
             )
             # Exactly one decision call per case.
             resp = self.client.make_single_decision(req)
-            text = resp.raw_response.decode("ascii")
-            try:
-                score = float(text)
-            except ValueError as exc:
-                raise ValueError(f"non-decimal score for {case.generated.spec.case_id}") from exc
-            if not 0.0 <= score <= 1.0:
-                raise ValueError(f"score out of range for {case.generated.spec.case_id}")
+            from .parse_contract import parse_plain_decimal_v1
+
+            # Frozen score contract: exactly ascii (0.[0-9]{2}|1.00) with optional
+            # single trailing LF. Rejects 1, 0.5, whitespace-padded, scientific
+            # notation, and any extra text.
+            score = parse_plain_decimal_v1(resp.raw_response)
+            if score is None:
+                raise ValueError(f"non-decimal score for {case.generated.spec.case_id}")
             out.append(
                 SingleScoreCall(
                     case_id=case.generated.spec.case_id,
@@ -74,3 +75,33 @@ class Stage1AScoringLoop:
                 )
             )
         return out
+
+
+@dataclass(frozen=True, slots=True)
+class Stage1APreparedRun:
+    """Integrated Stage-1A preflight + scoring with strict ordering.
+
+    Ordering guarantee: seal validation runs FIRST; only if it passes is the
+    model client constructed; only then is scoring executed. A seal mismatch
+    therefore results in zero client constructions and zero calls.
+    """
+
+    cases: tuple[Any, ...]
+    scoring_prompt: FrozenArtifact
+    model_configuration: ModelConfiguration
+    seal: Any  # callable that raises on mismatch (validate_stage1a_manifest_seal)
+    client_factory: Any  # callable returning a ModelClient
+
+    def run(self) -> list[SingleScoreCall]:
+        # 1) seal validation (raises on any mismatch; client not yet constructed)
+        self.seal()
+        # 2) client construction (after a passing seal)
+        client = self.client_factory()
+        # 3) scoring (one decision call per case)
+        loop = Stage1AScoringLoop(
+            cases=self.cases,
+            scoring_prompt=self.scoring_prompt,
+            model_configuration=self.model_configuration,
+            client=client,
+        )
+        return loop.run()

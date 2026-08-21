@@ -14,15 +14,16 @@ It never overwrites or deletes the original failed manifest/results.
 from __future__ import annotations
 
 import argparse
-import json
 import subprocess
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
-
-from protean_stage0.artifacts import FrozenArtifact, FrozenCaseSet, canonical_json_bytes, sha256_bytes
+from protean_stage0.artifacts import (
+    FrozenArtifact,
+    FrozenCaseSet,
+    sha256_bytes,
+)
 from protean_stage0.defects import (
     MechanicalDefectEvidence,
     MechanicalDefectKind,
@@ -38,6 +39,8 @@ from protean_stage0.validation import (
     validate_pre_run,
     verify_truth_agreement,
 )
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
 
 INVALIDATED_CASE_SET_SHA = "06fe8d471b1fbbc226696ed6d80b706cc84a6040a7fb91a93814343420291556"
 FROZEN_PROMPT_SHA = "ae8f093a69a7bae6818421000490a14c8a19a4a6be33069a1858bf0a9d7f6909"
@@ -70,7 +73,7 @@ def main() -> int:
     parser.add_argument(
         "--seed",
         default=None,
-        help="Fresh permitted seed. Defaults to protean-stage0-restart-v1:<16 hex of current HEAD>.",
+        help="Fresh permitted seed; default derives from current HEAD.",
     )
     parser.add_argument(
         "--out-dir",
