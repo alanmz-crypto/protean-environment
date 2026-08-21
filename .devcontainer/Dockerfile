@@ -36,8 +36,52 @@ EOF
 
 # Pinned formatting/lint tool for reproducible Stage 0 verification.
 RUN python3 -m venv /opt/protean-tools \
-    && /opt/protean-tools/bin/pip install --no-cache-dir ruff==0.12.8 \
+    && /opt/protean-tools/bin/pip install --no-cache-dir ruff==0.16.3 \
     && ln -s /opt/protean-tools/bin/ruff /usr/local/bin/ruff
+
+
+# Codex CLI (GPT-5.6 Luna / Sol experimental provider surface), pinned to the
+# exact Stage-0 frozen version via the published @openai/codex npm package.
+# Authentication is NOT installed here: the operator later runs `codex login`
+# into the container-local CODEX_HOME (auth is never baked into image/repo).
+# CODEX_HOME is container-local and the host ~/.codex is never mounted, so the
+# host ConvMem AGENTS.md / rules / memories / history / config never load.
+RUN <<EOF
+set -eu
+apt-get update -qq
+apt-get install -y -qq npm >/dev/null
+npm install -g --no-fund --no-audit @openai/codex@0.147.0 >/dev/null
+# npm 9 places the global bin directly on PATH at $(npm prefix -g)/bin; no manual link.
+command -v codex
+codex --version
+EOF
+
+# Container-local CODEX_HOME with the frozen minimal Codex config (no secrets).
+# target vscode home explicitly (build runs as root with HOME=/home/root).
+RUN <<EOF
+set -eu
+user="vscode"
+CODEX="/home/${user}/.codex-protean"
+mkdir -p "${CODEX}"
+cat > "${CODEX}/config.toml" <<'TOML'
+model = "gpt-5.6-luna"
+model_reasoning_effort = "xhigh"
+service_tier = "default"
+default_tools_enabled = false
+tools = []
+disabled_tools = ["apply_patch", "exec_command", "web_search", "image_gen", "view_image", "spawn_agent"]
+approval_mode = "never"
+use_memories = false
+generate_memories = false
+model_messages = false
+reminder_threshold_tokens = 1000000
+include_skills_usage_instructions = false
+include_plugin_usage_instructions = false
+TOML
+chown -R "${user}:${user}" "${CODEX}"
+mkdir -p /tmp/protean-score-empty
+chown "${user}:${user}" /tmp/protean-score-empty
+EOF
 
 # Container-only minimal Crush configuration for the devcontainer runtime user.
 # The remote user (vscode) has an isolated HOME that is never mounted from the

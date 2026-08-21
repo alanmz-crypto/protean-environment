@@ -17,7 +17,7 @@ class ModelConfiguration:
     model_id: str
     version_or_snapshot: str | None
     reasoning_settings: Mapping[str, Any]
-    temperature: float
+    temperature: float | None
     seed: int | None
     max_output_length: int
     api_parameters: Mapping[str, Any] = field(default_factory=dict)

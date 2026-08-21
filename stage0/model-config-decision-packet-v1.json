@@ -1,0 +1,32 @@
+{
+  "status": "CANDIDATE DECISION RECORD — awaiting Ryan selection (one recommended + one alternative)",
+  "note": "No experimental model call made. Facts from DeepSeek primary API docs (api-docs.deepseek.com, 2026-08).",
+  "harness_required_fields": ["provider", "model_id", "version_or_snapshot", "reasoning_settings", "temperature", "seed", "max_output_length", "api_parameters"],
+  "provider_reproducibility_note": "DeepSeek API does NOT expose a seed parameter. Determinism relies on a frozen low temperature plus recording the per-response system_fingerprint for audit. This matches Protocol §6 provenance provision.",
+  "recommended": {
+    "provider": "deepseek",
+    "base_url": "https://api.deepseek.com/v1/",
+    "model_id": "deepseek-v4-flash",
+    "version_or_snapshot": "DeepSeek-V4-Flash-0731",
+    "reasoning_settings": {"thinking": {"type": "disabled"}},
+    "temperature": 0.0,
+    "seed": null,
+    "max_output_length": 16,
+    "api_parameters": {"response_format": "text"},
+    "rationale": "Frontier model already available via the environment DEEPSEEK_API_KEY at api.deepseek.com/v1/. Non-thinking mode keeps output to the atomic single-decimal response contract (no chain-of-thought). Near-zero temperature maximizes reproducibility given no seed support. 16 max output comfortably fits one decimal."
+  },
+  "alternative": {
+    "provider": "deepseek",
+    "base_url": "https://api.deepseek.com/v1/",
+    "model_id": "deepseek-v4-pro",
+    "version_or_snapshot": "DeepSeek-V4-Pro-0813",
+    "reasoning_settings": {"thinking": {"type": "disabled"}},
+    "temperature": 0.0,
+    "seed": null,
+    "max_output_length": 16,
+    "api_parameters": {"response_format": "text"},
+    "rationale": "Same provider/format; stronger capability may yield a more discriminative applicability signal, but higher cost and latency with no guarantee of a better Stage 0 gate."
+  },
+  "tradeoff": "flash (recommended default): cheapest, fastest, matches the env default small-model role; adequate for a raw 0.00-1.00 applicability probe. pro (alternative): stronger, costlier, slower; could improve signal but Stage 0 only needs AUC>=0.60 with one-sided lower bound>0.50, so capability beyond flash is likely unnecessary for this narrow probe.",
+  "audit_provenance": "when scoring runs, record per-response: model, system_fingerprint, usage, timestamp, to satisfy Protocol §6 if exact reproducibility is not guaranteed."
+}

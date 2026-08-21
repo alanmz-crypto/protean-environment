@@ -137,9 +137,9 @@ def _render_context(spec: StructuredCaseSpec, slots: SlotValues) -> dict[str, st
         "subject": slots.subject,
         "p_condition": slots.p_condition,
         "q_condition": slots.q_condition,
-        "p_now": "true" if spec.p_now else "false",
-        "q_now": "true" if spec.q_now else "false",
-        "p_previous": "true" if spec.p_previous else "false",
+        "p_now": "satisfied" if spec.p_now else "unmet",
+        "q_now": "satisfied" if spec.q_now else "unmet",
+        "p_previous": "satisfied" if spec.p_previous else "unmet",
         "lifecycle": spec.lifecycle_state.value if spec.lifecycle_state else "not applicable",
     }
 
