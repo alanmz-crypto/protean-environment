@@ -33,16 +33,22 @@ FUTILITY_THRESHOLD = 0.50
 
 
 def validate_grid() -> None:
-    assert len(THRESHOLD_GRID) == 17, "grid must have exactly 17 thresholds"
-    assert THRESHOLD_GRID[0] == 0.10 and THRESHOLD_GRID[-1] == 0.90
+    if len(THRESHOLD_GRID) != 17:
+        raise ValueError("grid must have exactly 17 thresholds")
+    if not (THRESHOLD_GRID[0] == 0.10 and THRESHOLD_GRID[-1] == 0.90):
+        raise ValueError("grid endpoints must be 0.10 and 0.90")
     steps = {round(b - a, 2) for a, b in itertools.pairwise(THRESHOLD_GRID)}
-    assert steps == {0.05}, "grid step must be 0.05"
+    if steps != {0.05}:
+        raise ValueError("grid step must be 0.05")
 
 
 def validate_allocation(total: int, per_struct: int, per_class: int) -> None:
-    assert total == STAGE1A_TOTAL
-    assert per_struct == STAGE1A_PER_STRUCTURE
-    assert per_class == STAGE1A_PER_CLASS_PER_STRUCTURE
+    if total != STAGE1A_TOTAL:
+        raise ValueError("Stage-1A total allocation mismatch")
+    if per_struct != STAGE1A_PER_STRUCTURE:
+        raise ValueError("Stage-1A per-structure allocation mismatch")
+    if per_class != STAGE1A_PER_CLASS_PER_STRUCTURE:
+        raise ValueError("Stage-1A per-class-per-structure allocation mismatch")
 
 
 validate_grid()

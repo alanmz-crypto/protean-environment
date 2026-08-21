@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import json
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -77,6 +78,19 @@ def _dummy_config() -> Any:
     )
 
 
+def _seal_manifest(
+    origin_sha: str = "0" * 64, completed_sha: str = "0" * 64, batch: str = "shared-batch-1"
+) -> Any:
+    """A seal() callable returning a valid stand-in Stage1AManifest. Used by tests
+    whose intended failure happens at a LATER stage than the seal (coverage/artifacts),
+    so the seal must pass first."""
+    return lambda: SimpleNamespace(
+        origin_run_manifest_sha256=origin_sha,
+        origin_completed_run_sha256=completed_sha,
+        origin_batch_run_id=batch,
+    )
+
+
 def _records_for(cases: list[Any]) -> list[tuple[str, bytes]]:
     return [(c.generated.spec.case_id, c.textualized.commitment.encode()) for c in cases]
 
@@ -113,6 +127,9 @@ def _origin_artifact(
     origin_run_id: str,
     adopt_text: str | None = None,
     raw_override: bytes | None = None,
+    origin_manifest_sha256: str = "0" * 64,
+    batch_run_id: str | None = None,
+    request_index: int = 1,
 ) -> OriginSessionArtifact:
     """Build a valid artifact from real wire evidence (fake Luna Responses JSON)."""
     records = canonical_commitment_records(_records_for(cases))
@@ -137,16 +154,29 @@ def _origin_artifact(
         final_output_bytes=final_out,
         timestamp="2026-08-21T00:00:00Z",
         provider_metadata={"model": MODEL, "status": "completed"},
+        origin_manifest_sha256=origin_manifest_sha256,
+        batch_run_id=batch_run_id if batch_run_id is not None else origin_run_id,
+        request_index=request_index,
     )
 
 
 def _all_origins(
-    cases: tuple[Any, ...], run_base: str = "origin-"
+    cases: tuple[Any, ...],
+    run_base: str = "origin-",
+    batch_run_id: str = "shared-batch-1",
+    origin_manifest_sha256: str = "0" * 64,
 ) -> tuple[OriginSessionArtifact, ...]:
     grouped = _group_by_structure(cases)
     return tuple(
-        _origin_artifact(s.value, grouped[s.value], origin_run_id=run_base + s.value)
-        for s in FROZEN_STRUCTURES
+        _origin_artifact(
+            s.value,
+            grouped[s.value],
+            origin_run_id=f"{run_base}{s.value}",
+            batch_run_id=batch_run_id,
+            origin_manifest_sha256=origin_manifest_sha256,
+            request_index=idx,
+        )
+        for idx, s in enumerate(FROZEN_STRUCTURES, start=1)
     )
 
 
@@ -164,7 +194,7 @@ def test_origin_mandatory_zero_artifacts_no_client_no_calls() -> None:
         cases=cases,
         scoring_prompt=_dummy_prompt(),
         model_configuration=_dummy_config(),
-        seal=lambda: None,
+        seal=_seal_manifest(),
         client_factory=factory,
         origin_artifacts=(),  # zero artifacts -> MUST fail before client
     )
@@ -196,7 +226,7 @@ def test_correct_structure_ids_adoption_but_invalid_wire_evidence_blocks() -> No
             cases=cases,
             scoring_prompt=_dummy_prompt(),
             model_configuration=_dummy_config(),
-            seal=lambda: None,
+            seal=_seal_manifest(),
             client_factory=factory,
             origin_artifacts=(bad_art,),
         )
@@ -364,6 +394,9 @@ def _alter_commitment_but_recompute_hashes(
         final_output_bytes=final_out,
         timestamp="2026-08-21T00:00:00Z",
         provider_metadata={"model": MODEL, "status": "completed"},
+        origin_manifest_sha256="0" * 64,
+        batch_run_id="o-P-altered",
+        request_index=1,
     )
 
 
@@ -388,7 +421,7 @@ def test_altered_commitment_text_fails_pre_client() -> None:
         cases=cases,
         scoring_prompt=_dummy_prompt(),
         model_configuration=_dummy_config(),
-        seal=lambda: None,
+        seal=_seal_manifest(),
         client_factory=factory,
         origin_artifacts=tuple(artifacts),
     )
@@ -451,7 +484,7 @@ def test_fewer_than_5_never_construct_scoring_client() -> None:
         cases=cases,
         scoring_prompt=_dummy_prompt(),
         model_configuration=_dummy_config(),
-        seal=lambda: None,
+        seal=_seal_manifest(),
         client_factory=factory,
         origin_artifacts=_all_origins(cases)[:4],
     )
@@ -477,13 +510,29 @@ def test_preflight_ordering_seal_then_client_then_scoring() -> None:
         return _Client()
 
     cases = _cases()
+    artifacts = _all_origins(cases)
+    from protean_stage0.stage1a_origin_driver import CompletedOriginRun
+
+    completed = CompletedOriginRun(
+        manifest_sha256="0" * 64,
+        batch_run_id="shared-batch-1",
+        artifact_shas=tuple(a.sha256 for a in artifacts),
+        attempts=5,
+        successes=5,
+        failures=0,
+    )
     prepared = Stage1APreparedRun(
         cases=cases,
         scoring_prompt=FrozenArtifact.from_bytes("p", b"x"),
         model_configuration=_dummy_config(),
-        seal=lambda: None,
+        seal=lambda: SimpleNamespace(
+            origin_run_manifest_sha256=completed.manifest_sha256,
+            origin_completed_run_sha256=completed.completed_run_sha256,
+            origin_batch_run_id=completed.batch_run_id,
+        ),
         client_factory=factory,
-        origin_artifacts=_all_origins(cases),
+        origin_artifacts=artifacts,
+        completed_run=completed,
     )
     prepared.run()
     assert constructed == ["client"]

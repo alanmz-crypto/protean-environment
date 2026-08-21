@@ -94,16 +94,24 @@ class Stage1APreparedRun:
     seal: Any  # callable that raises on mismatch (validate_stage1a_manifest_seal)
     client_factory: Any  # callable returning a ModelClient
     origin_artifacts: tuple[Any, ...] = ()
+    completed_run: Any = (
+        None  # CompletedOriginRun (required; 5 standalone artifacts are NOT enough)
+    )
+    # DEPRECATED / free-disabled: no longer the calibration authority; the sealed
+    # Stage1AManifest is authoritative. Retained only for API compatibility.
+    expected_origin_manifest_sha256: str | None = None
+    expected_completed_run_sha256: str | None = None
 
     def run(self) -> list[SingleScoreCall]:
-        # 1) seal validation + MANDATORY real-origin coverage. Structure/coverage
-        #    alone is insufficient: every artifact must ALSO pass the full real
-        #    origin verifier (exact structure, 12 IDs, commitment records, exact
-        #    request SHA, preserved raw provider bytes + SHA, strict Responses-JSON
-        #    reparse, final-output match, and the EXACT origin-adoption-v1 contract).
-        #    Any failure (including zero artifacts) raises BEFORE the calibration
-        #    scoring client is constructed.
-        self.seal()
+        # 1) seal validation: self.seal() MUST return the exact validated
+        #    Stage1AManifest. This makes the calibration seal and the authority
+        #    structurally identical: there is no separately-supplied calibration
+        #    manifest that could differ from the one validated. Any mismatch
+        #    (including zero artifacts) raises BEFORE the calibration scoring client
+        #    is constructed.
+        sealed_manifest = self.seal()
+        if sealed_manifest is None:
+            raise ValueError("seal() did not return the exact validated Stage1AManifest")
         require_real_origin_coverage(
             self.origin_artifacts,
             frozenset(c.generated.spec.case_id for c in self.cases),
@@ -134,7 +142,63 @@ class Stage1APreparedRun:
                 expected_case_ids=expected_ids,
                 expected_commitment_records=expected_records,
             )
-        # 2) client construction (after passing seal + origin coverage + verifier)
+        # 1b) MANDATORY completed-run authority: five standalone artifacts are NOT
+        #     sufficient. Require one completed run (5/5/0) whose manifest SHA and
+        #     batch match all artifacts, with request indices 1..5 exactly once,
+        #     expected structures exactly once, and per-index artifact SHAs
+        #     matching the completed authority.
+        if self.completed_run is None:
+            raise ValueError("Stage-1A calibration requires a sealed CompletedOriginRun")
+        completed = self.completed_run
+        if (
+            completed.attempts != 5
+            or completed.successes != 5
+            or completed.failures != 0
+            or len(completed.artifact_shas) != 5
+        ):
+            raise ValueError("CompletedOriginRun must be 5 attempts / 5 successes / 0 failures")
+        if len(self.origin_artifacts) != 5:
+            raise ValueError("calibration requires exactly five origin artifacts")
+        artifacts_by_index = {a.request_index: a for a in self.origin_artifacts}
+        if set(artifacts_by_index) != {1, 2, 3, 4, 5}:
+            raise ValueError("origin artifacts must have request indices 1..5 exactly once")
+        structures_seen = {a.structure for a in self.origin_artifacts}
+        if structures_seen != set(FROZEN_STRUCTURES):
+            raise ValueError("origin artifacts must cover every frozen structure exactly once")
+        for art in self.origin_artifacts:
+            if art.batch_run_id != completed.batch_run_id:
+                raise ValueError("origin artifact batch/run ID does not match completed run")
+            if getattr(art, "origin_manifest_sha256", None) != completed.manifest_sha256:
+                raise ValueError("origin artifact manifest SHA does not match completed run")
+            if art.sha256 != completed.artifact_shas[art.request_index - 1]:
+                raise ValueError("origin artifact SHA does not match completed-run authority")
+        # 1c) Anchor calibration to the SEALED Stage1AManifest authority. The expected
+        #     origin-manifest SHA, completed-run SHA, and batch ID are derived from the
+        #     exact manifest returned by seal() (i.e. the very object passed through
+        #     validate_stage1a_manifest_seal), NOT from the supplied CompletedOriginRun
+        #     (a self-consistent fabricated completed run cannot authorize itself). There
+        #     is no separately-supplied calibration manifest that could differ from the
+        #     one validated, so seal() can never validate manifest A while the run reads
+        #     manifest B.
+        exp_origin_sha = getattr(sealed_manifest, "origin_run_manifest_sha256", "")
+        exp_completed_sha = getattr(sealed_manifest, "origin_completed_run_sha256", "")
+        exp_batch = getattr(sealed_manifest, "origin_batch_run_id", "")
+        if not exp_origin_sha or not exp_completed_sha or not exp_batch:
+            raise ValueError("sealed Stage1AManifest is missing origin authority fields")
+        if completed.manifest_sha256 != exp_origin_sha:
+            raise ValueError("completed-run origin-manifest SHA does not match sealed manifest")
+        if completed.completed_run_sha256 != exp_completed_sha:
+            raise ValueError("completed-run SHA does not match sealed manifest")
+        if completed.batch_run_id != exp_batch:
+            raise ValueError("completed-run batch/run ID does not match sealed manifest")
+        for art in self.origin_artifacts:
+            if art.request_index not in (1, 2, 3, 4, 5):
+                raise ValueError("origin artifact request index out of 1..5")
+            expected_struct = FROZEN_STRUCTURES[art.request_index - 1]
+            if art.structure is not expected_struct:
+                raise ValueError("origin artifact index/structure permutation")
+        # 2) client construction (after passing seal + origin coverage + verifier
+        #    + completed-run authority)
         client = self.client_factory()
         # 3) scoring (one decision call per case)
         loop = Stage1AScoringLoop(
