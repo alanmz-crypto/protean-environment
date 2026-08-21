@@ -50,6 +50,9 @@ class Stage1AManifest:
     origin_response_contract: str
     origin_prompt_sha256: str
     origin_response_contract_sha256: str
+    origin_run_manifest_sha256: str
+    origin_completed_run_sha256: str
+    origin_batch_run_id: str
     case_set_sha256: str
     scoring_prompt_sha256: str
     parse_contract_sha256: str
@@ -89,6 +92,9 @@ class Stage1AManifest:
         expected_origin_sessions: int = 5,
         origin_prompt_sha256: str = ORIGIN_PROMPT_SHA256,
         origin_response_contract_sha256: str = ORIGIN_RESPONSE_CONTRACT_SHA256,
+        origin_run_manifest_sha256: str = "",
+        origin_completed_run_sha256: str = "",
+        origin_batch_run_id: str = "",
     ) -> Stage1AManifest:
         if len(case_set.cases) != STAGE1A_TOTAL:
             raise ValueError("Stage-1A manifest requires exactly 60 cases")
@@ -114,6 +120,9 @@ class Stage1AManifest:
             origin_response_contract=origin_response_contract,
             origin_prompt_sha256=origin_prompt_sha256,
             origin_response_contract_sha256=origin_response_contract_sha256,
+            origin_run_manifest_sha256=origin_run_manifest_sha256,
+            origin_completed_run_sha256=origin_completed_run_sha256,
+            origin_batch_run_id=origin_batch_run_id,
             case_set_sha256=case_set.sha256,
             scoring_prompt_sha256=scoring_prompt.sha256,
             parse_contract_sha256=parse_contract_sha256,
@@ -156,6 +165,9 @@ class Stage1AManifest:
             "origin_response_contract": self.origin_response_contract,
             "origin_prompt_sha256": self.origin_prompt_sha256,
             "origin_response_contract_sha256": self.origin_response_contract_sha256,
+            "origin_run_manifest_sha256": self.origin_run_manifest_sha256,
+            "origin_completed_run_sha256": self.origin_completed_run_sha256,
+            "origin_batch_run_id": self.origin_batch_run_id,
             "case_set_sha256": self.case_set_sha256,
             "scoring_prompt_sha256": self.scoring_prompt_sha256,
             "parse_contract_sha256": self.parse_contract_sha256,
@@ -193,6 +205,9 @@ class Stage1AManifest:
             self.origin_response_contract,
             self.origin_prompt_sha256,
             self.origin_response_contract_sha256,
+            self.origin_run_manifest_sha256,
+            self.origin_completed_run_sha256,
+            self.origin_batch_run_id,
             self.case_set_sha256,
             self.scoring_prompt_sha256,
             self.parse_contract_sha256,
@@ -226,6 +241,9 @@ def validate_stage1a_manifest_seal(
     expected_origin_sessions: int = 5,
     origin_mechanism_version: str = "stage1a-real-origin-v1",
     origin_response_contract_version: str = ORIGIN_RESPONSE_CONTRACT_VERSION,
+    expected_origin_run_manifest_sha256: str = "",
+    expected_origin_completed_run_sha256: str = "",
+    expected_origin_batch_run_id: str = "",
 ) -> None:
     """Fail closed (raise) before any provider call on any Stage-1A mismatch.
 
@@ -265,4 +283,23 @@ def validate_stage1a_manifest_seal(
     # Authoritative Luna configuration must be the frozen direct Responses config.
     if model_configuration.sha256 != DIRECT_CONFIG_HASH:
         raise ValueError("Stage-1A seal mismatch: model configuration != authoritative Luna config")
+    # The origin outer-authority bindings are MANDATORY for a calibration-authorizing
+    # manifest and must equal the externally supplied sealed values.
+    for name, recorded, expected in (
+        (
+            "origin run manifest SHA",
+            manifest.origin_run_manifest_sha256,
+            expected_origin_run_manifest_sha256,
+        ),
+        (
+            "origin completed-run SHA",
+            manifest.origin_completed_run_sha256,
+            expected_origin_completed_run_sha256,
+        ),
+        ("origin batch/run ID", manifest.origin_batch_run_id, expected_origin_batch_run_id),
+    ):
+        if not expected:
+            raise ValueError(f"Stage-1A seal requires an expected {name} for calibration")
+        if recorded != expected:
+            raise ValueError(f"Stage-1A seal mismatch: {name}")
     manifest.validate_completeness()
