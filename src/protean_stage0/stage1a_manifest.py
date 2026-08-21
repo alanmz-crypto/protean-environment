@@ -14,6 +14,7 @@ from types import MappingProxyType
 from typing import Any
 
 from .artifacts import FrozenArtifact, FrozenCaseSet, canonical_json_bytes, sha256_bytes
+from .direct_config import DIRECT_CONFIG_HASH
 from .manifest import ModelConfiguration
 from .schema import EvaluatorProvenance
 from .stage1a_config import (
@@ -24,6 +25,16 @@ from .stage1a_config import (
     STAGE1A_POSITIVE,
     STAGE1A_TOTAL,
 )
+from .stage1a_origin import (
+    ORIGIN_PROMPT_SHA256,
+    ORIGIN_RESPONSE_CONTRACT_SHA256,
+    ORIGIN_RESPONSE_CONTRACT_VERSION,
+)
+
+# Authoritative ratified real-origin amendment artifact (not the DRAFT).
+RATIFIED_REAL_ORIGIN_AMENDMENT_SHA256 = (
+    "404bada3218b5d9ce989d19e9b19ad96bb470cc39197e6ee9236c916e032718a"
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -32,6 +43,13 @@ class Stage1AManifest:
     protocol_version: str
     futility_amendment_sha256: str
     futility_amendment_version: str
+    real_origin_amendment_sha256: str
+    real_origin_amendment_version: str
+    origin_mechanism_version: str
+    expected_origin_sessions: int
+    origin_response_contract: str
+    origin_prompt_sha256: str
+    origin_response_contract_sha256: str
     case_set_sha256: str
     scoring_prompt_sha256: str
     parse_contract_sha256: str
@@ -56,6 +74,7 @@ class Stage1AManifest:
         *,
         protocol: FrozenArtifact,
         futility_amendment: FrozenArtifact,
+        real_origin_amendment: FrozenArtifact,
         case_set: FrozenCaseSet,
         scoring_prompt: FrozenArtifact,
         parse_contract_sha256: str,
@@ -65,9 +84,18 @@ class Stage1AManifest:
         reference_evaluator: EvaluatorProvenance,
         timestamp: str,
         run_id: str,
+        origin_mechanism_version: str = "stage1a-real-origin-v1",
+        origin_response_contract: str = ORIGIN_RESPONSE_CONTRACT_VERSION,
+        expected_origin_sessions: int = 5,
+        origin_prompt_sha256: str = ORIGIN_PROMPT_SHA256,
+        origin_response_contract_sha256: str = ORIGIN_RESPONSE_CONTRACT_SHA256,
     ) -> Stage1AManifest:
         if len(case_set.cases) != STAGE1A_TOTAL:
             raise ValueError("Stage-1A manifest requires exactly 60 cases")
+        if real_origin_amendment.sha256 != RATIFIED_REAL_ORIGIN_AMENDMENT_SHA256:
+            raise ValueError(
+                "Stage-1A manifest must bind the RATIFIED real-origin amendment, not the DRAFT"
+            )
         from .generator import GeneratedCaseSpec
         from .stage1a_cases import validate_stage1a_allocation
 
@@ -79,6 +107,13 @@ class Stage1AManifest:
             protocol_version="prospective-control-v1.0",
             futility_amendment_sha256=futility_amendment.sha256,
             futility_amendment_version="stage1-futility-shared-score-v1.0.1-r1",
+            real_origin_amendment_sha256=real_origin_amendment.sha256,
+            real_origin_amendment_version="stage1a-real-origin-v1.0.2-r1",
+            origin_mechanism_version=origin_mechanism_version,
+            expected_origin_sessions=expected_origin_sessions,
+            origin_response_contract=origin_response_contract,
+            origin_prompt_sha256=origin_prompt_sha256,
+            origin_response_contract_sha256=origin_response_contract_sha256,
             case_set_sha256=case_set.sha256,
             scoring_prompt_sha256=scoring_prompt.sha256,
             parse_contract_sha256=parse_contract_sha256,
@@ -114,6 +149,13 @@ class Stage1AManifest:
             "protocol_version": self.protocol_version,
             "futility_amendment_sha256": self.futility_amendment_sha256,
             "futility_amendment_version": self.futility_amendment_version,
+            "real_origin_amendment_sha256": self.real_origin_amendment_sha256,
+            "real_origin_amendment_version": self.real_origin_amendment_version,
+            "origin_mechanism_version": self.origin_mechanism_version,
+            "expected_origin_sessions": self.expected_origin_sessions,
+            "origin_response_contract": self.origin_response_contract,
+            "origin_prompt_sha256": self.origin_prompt_sha256,
+            "origin_response_contract_sha256": self.origin_response_contract_sha256,
             "case_set_sha256": self.case_set_sha256,
             "scoring_prompt_sha256": self.scoring_prompt_sha256,
             "parse_contract_sha256": self.parse_contract_sha256,
@@ -145,6 +187,12 @@ class Stage1AManifest:
             self.protocol_version,
             self.futility_amendment_sha256,
             self.futility_amendment_version,
+            self.real_origin_amendment_sha256,
+            self.real_origin_amendment_version,
+            self.origin_mechanism_version,
+            self.origin_response_contract,
+            self.origin_prompt_sha256,
+            self.origin_response_contract_sha256,
             self.case_set_sha256,
             self.scoring_prompt_sha256,
             self.parse_contract_sha256,
@@ -155,6 +203,8 @@ class Stage1AManifest:
         )
         if not all(required):
             raise ValueError("Stage-1A manifest contains an empty required field")
+        if self.expected_origin_sessions != 5:
+            raise ValueError("Stage-1A manifest must require exactly 5 origin sessions")
         if (self.total_cases, self.positive_count, self.negative_count) != (60, 30, 30):
             raise ValueError("Stage-1A manifest must record 60/30/30")
         if (self.per_structure, self.per_class_per_structure) != (12, 6):
@@ -167,11 +217,15 @@ def validate_stage1a_manifest_seal(
     actual_harness_revision: str,
     protocol: FrozenArtifact,
     futility_amendment: FrozenArtifact,
+    real_origin_amendment: FrozenArtifact,
     case_set: FrozenCaseSet,
     scoring_prompt: FrozenArtifact,
     parse_contract_sha256: str,
     model_configuration: ModelConfiguration,
     cross_session_rep_version: str = CROSS_SESSION_REP_VERSION,
+    expected_origin_sessions: int = 5,
+    origin_mechanism_version: str = "stage1a-real-origin-v1",
+    origin_response_contract_version: str = ORIGIN_RESPONSE_CONTRACT_VERSION,
 ) -> None:
     """Fail closed (raise) before any provider call on any Stage-1A mismatch.
 
@@ -182,12 +236,17 @@ def validate_stage1a_manifest_seal(
     checks = {
         "protocol": (manifest.protocol_sha256, protocol.sha256),
         "futility amendment": (manifest.futility_amendment_sha256, futility_amendment.sha256),
+        "real-origin amendment": (
+            manifest.real_origin_amendment_sha256,
+            real_origin_amendment.sha256,
+        ),
         "case set": (manifest.case_set_sha256, case_set.sha256),
         "scoring prompt": (manifest.scoring_prompt_sha256, scoring_prompt.sha256),
         "parse contract": (manifest.parse_contract_sha256, parse_contract_sha256),
-        "model configuration": (
-            manifest.model_configuration_sha256,
-            model_configuration.sha256,
+        "origin prompt": (manifest.origin_prompt_sha256, ORIGIN_PROMPT_SHA256),
+        "origin response contract": (
+            manifest.origin_response_contract_sha256,
+            ORIGIN_RESPONSE_CONTRACT_SHA256,
         ),
     }
     for name, (recorded, actual) in checks.items():
@@ -197,4 +256,13 @@ def validate_stage1a_manifest_seal(
         raise ValueError("Stage-1A seal mismatch: harness revision")
     if manifest.cross_session_rep_version != cross_session_rep_version:
         raise ValueError("Stage-1A seal mismatch: cross-session representation version")
+    if manifest.expected_origin_sessions != expected_origin_sessions:
+        raise ValueError("Stage-1A seal mismatch: expected origin sessions")
+    if manifest.origin_mechanism_version != origin_mechanism_version:
+        raise ValueError("Stage-1A seal mismatch: origin mechanism version")
+    if manifest.origin_response_contract != origin_response_contract_version:
+        raise ValueError("Stage-1A seal mismatch: origin response-contract version")
+    # Authoritative Luna configuration must be the frozen direct Responses config.
+    if model_configuration.sha256 != DIRECT_CONFIG_HASH:
+        raise ValueError("Stage-1A seal mismatch: model configuration != authoritative Luna config")
     manifest.validate_completeness()

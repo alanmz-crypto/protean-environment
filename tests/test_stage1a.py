@@ -46,6 +46,13 @@ def _cases() -> tuple[Any, ...]:
     return build_stage1a_cases(template_bank=_bank())
 
 
+def _ratified_origin_amendment() -> FrozenArtifact:
+    return FrozenArtifact.from_bytes(
+        "ratified-real-origin",
+        (REPO / "docs/RATIFIED-AMENDMENT-stage1a-real-origin-v1.0.2-r1.md").read_bytes(),
+    )
+
+
 def _scored(pos_score: float, neg_score: float, n_per_class: int = 5) -> tuple[ScoredCase, ...]:
     """Hand-built deterministic scored cases: positives at pos_score, negatives at neg_score."""
     return tuple(
@@ -221,6 +228,7 @@ def test_seal_mismatch_stops_before_any_scoring() -> None:
     case_set = freeze_stage1a_case_set(_cases())
     protocol = FrozenArtifact.from_bytes("protocol", b"PROTOCOL")
     amendment = FrozenArtifact.from_bytes("amendment", b"AMEND")
+    real_origin = _ratified_origin_amendment()
     prompt = FrozenArtifact.from_bytes("prompt", b"PROMPT")
     primary = _prov("primary")
     reference = _prov("reference")
@@ -228,6 +236,7 @@ def test_seal_mismatch_stops_before_any_scoring() -> None:
     manifest = Stage1AManifest.create(
         protocol=protocol,
         futility_amendment=amendment,
+        real_origin_amendment=real_origin,
         case_set=case_set,
         scoring_prompt=prompt,
         parse_contract_sha256="0" * 64,
@@ -245,6 +254,7 @@ def test_seal_mismatch_stops_before_any_scoring() -> None:
             actual_harness_revision="HEAD",
             protocol=protocol,
             futility_amendment=amendment,
+            real_origin_amendment=real_origin,
             case_set=case_set,
             scoring_prompt=tampered_prompt,
             parse_contract_sha256="0" * 64,
@@ -265,25 +275,20 @@ def _prov(name: str) -> EvaluatorProvenance:
 
 
 def _dummy_config() -> ModelConfiguration:
-    return ModelConfiguration(
-        provider="test",
-        model_id="test-model",
-        version_or_snapshot=None,
-        reasoning_settings={},
-        temperature=0.1,
-        seed=None,
-        max_output_length=16,
-        api_parameters={},
-    )
+    # The Stage-1A seal requires the authoritative frozen Luna configuration.
+    from protean_stage0.direct_config import direct_model_configuration
+
+    return direct_model_configuration()
 
 
 # ---- hardening: harness-revision seal ----
-def _manifest_and_docs(head: str = "HEAD") -> tuple[Any, Any, Any, Any, Any, Any]:
+def _manifest_and_docs(head: str = "HEAD") -> tuple[Any, Any, Any, Any, Any, Any, Any]:
     from protean_stage0.stage1a_manifest import Stage1AManifest
 
     case_set = freeze_stage1a_case_set(_cases())
     protocol = FrozenArtifact.from_bytes("protocol", b"PROTOCOL")
     amendment = FrozenArtifact.from_bytes("amendment", b"AMEND")
+    real_origin = _ratified_origin_amendment()
     prompt = FrozenArtifact.from_bytes("prompt", b"PROMPT")
     primary = _prov("primary2")
     reference = _prov("reference2")
@@ -291,6 +296,7 @@ def _manifest_and_docs(head: str = "HEAD") -> tuple[Any, Any, Any, Any, Any, Any
     manifest = Stage1AManifest.create(
         protocol=protocol,
         futility_amendment=amendment,
+        real_origin_amendment=real_origin,
         case_set=case_set,
         scoring_prompt=prompt,
         parse_contract_sha256="0" * 64,
@@ -301,16 +307,17 @@ def _manifest_and_docs(head: str = "HEAD") -> tuple[Any, Any, Any, Any, Any, Any
         timestamp="t",
         run_id="R2",
     )
-    return manifest, protocol, amendment, prompt, case_set, model
+    return manifest, protocol, amendment, real_origin, prompt, case_set, model
 
 
 def test_seal_passes_when_harness_revision_matches() -> None:
-    manifest, protocol, amendment, prompt, case_set, model = _manifest_and_docs("HEAD")
+    manifest, protocol, amendment, real_origin, prompt, case_set, model = _manifest_and_docs("HEAD")
     validate_stage1a_manifest_seal(
         manifest,
         actual_harness_revision="HEAD",
         protocol=protocol,
         futility_amendment=amendment,
+        real_origin_amendment=real_origin,
         case_set=case_set,
         scoring_prompt=prompt,
         parse_contract_sha256="0" * 64,
@@ -319,13 +326,14 @@ def test_seal_passes_when_harness_revision_matches() -> None:
 
 
 def test_stale_manifest_head_fails_before_client() -> None:
-    manifest, protocol, amendment, prompt, case_set, model = _manifest_and_docs("HEAD")
+    manifest, protocol, amendment, real_origin, prompt, case_set, model = _manifest_and_docs("HEAD")
     with pytest.raises(ValueError, match="harness revision"):
         validate_stage1a_manifest_seal(
             manifest,
             actual_harness_revision="STALE-HEAD",
             protocol=protocol,
             futility_amendment=amendment,
+            real_origin_amendment=real_origin,
             case_set=case_set,
             scoring_prompt=prompt,
             parse_contract_sha256="0" * 64,
@@ -405,58 +413,4 @@ def test_second_best_tied_best_uses_same_ranking_over_remaining() -> None:
     assert report.second_best_threshold == 0.55
 
 
-# ---- hardening: integrated preflight ordering ----
-def test_preflight_ordering_seal_then_client_then_scoring() -> None:
-    from protean_stage0.stage1a_driver import Stage1APreparedRun
-
-    constructed: list[str] = []
-    calls: list[str] = []
-
-    class _Client:
-        def make_single_decision(self, request: Any) -> Any:
-            calls.append("call")
-            from protean_stage0.harness import ModelResponse
-
-            return ModelResponse(b"0.73", {})
-
-    def factory() -> Any:
-        constructed.append("client")
-        return _Client()
-
-    cases = _cases()
-    prepared = Stage1APreparedRun(
-        cases=cases,
-        scoring_prompt=FrozenArtifact.from_bytes("p", b"x"),
-        model_configuration=_dummy_config(),
-        seal=lambda: None,
-        client_factory=factory,
-    )
-    prepared.run()
-    assert constructed == ["client"]
-    assert len(calls) == len(cases)  # one call per case, after a single client
-
-
-def test_seal_mismatch_yields_zero_clients_and_zero_calls() -> None:
-    from protean_stage0.stage1a_driver import Stage1APreparedRun
-
-    constructed: list[str] = []
-    calls: list[str] = []
-
-    def _client_factory() -> object:
-        constructed.append("client")
-        return object()
-
-    def _seal_boom() -> None:
-        raise ValueError("Stage-1A seal mismatch: harness revision")
-
-    prepared = Stage1APreparedRun(
-        cases=_cases(),
-        scoring_prompt=FrozenArtifact.from_bytes("p", b"x"),
-        model_configuration=_dummy_config(),
-        seal=_seal_boom,
-        client_factory=_client_factory,
-    )
-    with pytest.raises(ValueError, match="seal mismatch"):
-        prepared.run()
-    assert constructed == []  # no client built
-    assert calls == []
+# ---- hardening: integrated preflight ordering is covered in test_stage1a_origin.py ----
