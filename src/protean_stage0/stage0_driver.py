@@ -66,10 +66,21 @@ def working_tree_is_clean() -> bool:
     return not out.stdout.strip()
 
 
-def load_frozen_case_set() -> tuple[FrozenCaseSet, tuple[GeneratedCaseSpec, ...]]:
-    """Reconstruct Stage0Case from the exact frozen canonical bytes; round-trip check."""
-    raw = CASE_SET_PATH.read_bytes()
-    if sha256_bytes(raw) != FROZEN_CASE_SET_SHA:
+def load_frozen_case_set(
+    case_set_path: Path | None = None,
+    expected_sha: str | None = None,
+) -> tuple[FrozenCaseSet, tuple[GeneratedCaseSpec, ...]]:
+    """Reconstruct Stage0Case from exact frozen canonical bytes; round-trip check.
+
+    Defaults to the immutable original (``CASE_SET_PATH`` / ``FROZEN_CASE_SET_SHA``).
+    For the restart lane, pass an explicit ``case_set_path`` and the manifest's
+    ``case_set_sha256`` as ``expected_sha``: the exact bytes must hash to that
+    value and reserialize byte-for-byte identically, or the call raises.
+    """
+    path = case_set_path if case_set_path is not None else CASE_SET_PATH
+    expected = expected_sha if expected_sha is not None else FROZEN_CASE_SET_SHA
+    raw = path.read_bytes()
+    if sha256_bytes(raw) != expected:
         raise ValueError("frozen case-set hash does not match the immutable input")
     data = json.loads(raw.decode("utf-8"))
     reconstructed: list[Stage0Case] = []
@@ -109,7 +120,7 @@ def load_frozen_case_set() -> tuple[FrozenCaseSet, tuple[GeneratedCaseSpec, ...]
     frozen.verify()
     if frozen.artifact_bytes != raw:
         raise ValueError("reserialization does not reproduce the frozen case-set bytes")
-    if frozen.sha256 != FROZEN_CASE_SET_SHA:
+    if frozen.sha256 != expected:
         raise ValueError("reserialized case-set hash mismatch")
     return frozen, tuple(generated_specs)
 
@@ -125,14 +136,18 @@ class PreparedRun:
     manifest_sha256: str
 
 
-def load_frozen_artifacts() -> tuple[
+def load_frozen_artifacts(
+    case_set: FrozenCaseSet | None = None,
+    generated: tuple[GeneratedCaseSpec, ...] | None = None,
+) -> tuple[
     FrozenCaseSet,
     tuple[GeneratedCaseSpec, ...],
     FrozenArtifact,
     FrozenArtifact,
     FrozenArtifact,
 ]:
-    case_set, generated = load_frozen_case_set()
+    if case_set is None or generated is None:
+        case_set, generated = load_frozen_case_set()
     prompt_bytes = SCORING_PROMPT_PATH.read_bytes()
     if sha256_bytes(prompt_bytes) != FROZEN_PROMPT_SHA:
         raise ValueError("frozen scoring prompt hash mismatch")
@@ -243,13 +258,25 @@ def load_prepared_manifest(path: Path) -> tuple[bytes, str, RunManifest]:
     return raw, sha, manifest
 
 
-def seal_reconstructed_run(manifest: RunManifest, *, head: str, clean: bool) -> None:
-    """Refuse live execution unless the run is sealed to one immutable revision."""
+def seal_reconstructed_run(
+    manifest: RunManifest,
+    *,
+    head: str,
+    clean: bool,
+    case_set: FrozenCaseSet,
+    generated: tuple[GeneratedCaseSpec, ...],
+) -> None:
+    """Refuse live execution unless the run is sealed to one immutable revision.
+
+    The exact reconstructed ``case_set`` (from the supplied artifact) is used
+    here and passed unchanged to scoring, so the driver never validates one case
+    set and scores another.
+    """
     if not clean:
         raise RuntimeError("refusing live execution: working tree is dirty")
     if head != manifest.harness_revision:
         raise RuntimeError("refusing live execution: HEAD != manifest.harness_revision")
-    case_set, generated, prompt, protocol, execution_plan = load_frozen_artifacts()
+    _, _generated, prompt, protocol, execution_plan = load_frozen_artifacts(case_set, generated)
     if case_set.sha256 != manifest.case_set_sha256:
         raise RuntimeError("refusing live execution: case-set hash != manifest")
     if prompt.sha256 != manifest.scoring_prompt_sha256:
@@ -265,15 +292,21 @@ def seal_reconstructed_run(manifest: RunManifest, *, head: str, clean: bool) -> 
         raise RuntimeError("refusing live execution: model configuration hash != manifest")
 
 
-def run_prepared_scoring(manifest: RunManifest, api_key: str) -> tuple[RawResult, ...]:
+def run_prepared_scoring(
+    manifest: RunManifest,
+    api_key: str,
+    *,
+    case_set: FrozenCaseSet,
+    generated: tuple[GeneratedCaseSpec, ...],
+) -> tuple[RawResult, ...]:
     """Live scoring path (never exercised in PREPARE mode). One decision per case."""
     from .harness import run_single_decision_loop
 
     if not api_key:
         raise RuntimeError("OPENAI_API_KEY is required for live execution")
-    # Rebuild frozen case set / artifacts from immutable files; their hashes must
-    # match the manifest (already enforced by seal_reconstructed_run).
-    case_set, generated, prompt, protocol, execution_plan = load_frozen_artifacts()
+    # Rebuild documents from immutable files; reuse the exact reconstructed case
+    # set/generated specs already validated by seal_reconstructed_run.
+    _, _, prompt, protocol, execution_plan = load_frozen_artifacts(case_set, generated)
     bindings = ExperimentalBindings(prompt=prompt, model_configuration=direct_model_configuration())
     primary = load_evaluator_provenance(PRIMARY_PROV_PATH, PRIMARY_IMPL_PATH)
     reference = load_evaluator_provenance(REFERENCE_PROV_PATH, REFERENCE_IMPL_PATH)
@@ -329,6 +362,15 @@ def run_cli(argv: list[str] | None = None) -> int:
         default=str(REPO_ROOT / "stage0/runs"),
         help="Directory to write run artifacts (ignored by git).",
     )
+    parser.add_argument(
+        "--case-set",
+        default=None,
+        help=(
+            "Exact frozen case-set artifact (canonical JSON) for live execution. "
+            "Required for a restart manifest; its bytes must hash to "
+            "manifest.case_set_sha256 or the run STOPS before any provider call."
+        ),
+    )
     args = parser.parse_args(argv)
 
     if args.execute_live:
@@ -336,22 +378,42 @@ def run_cli(argv: list[str] | None = None) -> int:
             parser.error("--execute-live requires --manifest <prepared-manifest.json>")
         manifest_path = Path(args.manifest)
         raw, sha, manifest = load_prepared_manifest(manifest_path)
+        # Reconstruct the ONE case set the run will both seal against and score.
+        # For an explicit --case-set, its exact bytes must hash to the manifest's
+        # case_set_sha256 and reserialize identically; otherwise the default
+        # original artifact is used (and still must match the manifest).
+        if args.case_set is not None:
+            case_set, generated = load_frozen_case_set(
+                Path(args.case_set), expected_sha=manifest.case_set_sha256
+            )
+        else:
+            case_set, generated = load_frozen_case_set()
         # seal: never regenerate run id / timestamp / fields.
         seal_reconstructed_run(
             manifest,
             head=current_git_head(),
             clean=working_tree_is_clean(),
+            case_set=case_set,
+            generated=generated,
         )
         api_key = os.environ.get("OPENAI_API_KEY", "")
-        raw_results = run_prepared_scoring(manifest, api_key)
+        raw_results = run_prepared_scoring(
+            manifest, api_key, case_set=case_set, generated=generated
+        )
         artifact = freeze_raw_results(manifest.run_id, raw_results)
         out_dir = Path(args.out_dir)
         out_dir.mkdir(parents=True, exist_ok=True)
         artifact_path = out_dir / f"raw-results-{manifest.run_id}.json"
         artifact_path.write_bytes(artifact.content)
+        from collections import Counter
+
+        status_counts = dict(Counter(result.parse_status.value for result in raw_results))
         print(f"consumed_manifest_sha256={sha}")
         print(f"run_id={manifest.run_id}")
         print(f"harness_revision={manifest.harness_revision}")
+        print(f"case_set_sha256={case_set.sha256}")
+        print(f"result_count={len(raw_results)}")
+        print(f"parse_status_counts={status_counts}")
         print(f"raw_results_sha256={artifact.sha256}")
         print(f"raw_results_artifact={artifact_path}")
         return 0

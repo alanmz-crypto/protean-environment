@@ -129,8 +129,11 @@ def test_manifest_head_mismatch_blocks(tmp_path: Any) -> None:
     manifest_path, _ = _prepared_manifest(tmp_path)
     _, _, manifest = drv.load_prepared_manifest(tmp_path / manifest_path)
     other = manifest.harness_revision + "0"
+    case_set, generated = drv.load_frozen_case_set()
     with pytest.raises(RuntimeError, match="HEAD != manifest"):
-        drv.seal_reconstructed_run(manifest, head=other, clean=True)
+        drv.seal_reconstructed_run(
+            manifest, head=other, clean=True, case_set=case_set, generated=generated
+        )
 
 
 def test_live_does_not_call_build_run_manifest(
