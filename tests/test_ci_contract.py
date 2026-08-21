@@ -45,9 +45,32 @@ def test_workflow_full_gate_present() -> None:
 def test_workflow_pins_python_312_and_tools() -> None:
     wf = _workflow()
     assert 'python-version: ["3.12"]' in wf or "python-version: ['3.12']" in wf
+    # Runner must be the pinned ubuntu-24.04, not a moving latest.
+    assert "runs-on: ubuntu-24.04" in wf
     assert "pytest==9.1.1" in wf
     assert "mypy==2.1.0" in wf
     assert "ruff==0.16.3" in wf
+
+
+def test_workflow_pins_action_shas() -> None:
+    wf = _workflow()
+    # checkout@v4 and setup-python@v5 must be pinned to the exact SHAs from the
+    # successful run so the CI cannot drift, while a comment still identifies the
+    # major version.
+    assert "actions/checkout@11d5960a326750d5838078e36cf38b85af677262" in wf, (
+        "checkout action SHA not pinned"
+    )
+    assert "actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065" in wf, (
+        "setup-python action SHA not pinned"
+    )
+    assert "- uses: actions/checkout@v4" not in wf, "checkout uses: must not drift on a tag"
+    assert "uses: actions/setup-python@v5" not in wf, "setup-python uses: must not drift on a tag"
+
+
+def test_devcontainer_ruff_pin_matches_ci() -> None:
+    dockerfile = (REPO / ".devcontainer/Dockerfile").read_text(encoding="utf-8")
+    assert "ruff==0.16.3" in dockerfile, "devcontainer Ruff pin must match CI (0.16.3)"
+    assert "ruff==0.12.8" not in dockerfile, "stale devcontainer Ruff pin must be gone"
 
 
 def test_workflow_has_no_secrets_or_provider_access() -> None:

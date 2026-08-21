@@ -36,7 +36,7 @@ EOF
 
 # Pinned formatting/lint tool for reproducible Stage 0 verification.
 RUN python3 -m venv /opt/protean-tools \
-    && /opt/protean-tools/bin/pip install --no-cache-dir ruff==0.12.8 \
+    && /opt/protean-tools/bin/pip install --no-cache-dir ruff==0.16.3 \
     && ln -s /opt/protean-tools/bin/ruff /usr/local/bin/ruff
 
 
