@@ -228,6 +228,7 @@ def verify_origin_artifact(
     origin_prompt: bytes,
     expected_structure: StructureId,
     expected_case_ids: tuple[str, ...],
+    expected_commitment_records: tuple[tuple[str, bytes], ...],
     authoritative_luna_config_sha256: str = DIRECT_CONFIG_HASH,
     expected_provider_model: str = MODEL,
 ) -> None:
@@ -239,11 +240,21 @@ def verify_origin_artifact(
     output, and applies the EXACT origin-adoption-v1 contract. A manually
     populated adoption dict is never used as proof. Missing model/status evidence
     fails closed via the strict parser.
+
+    ``expected_commitment_records`` is the mechanically-derived ORDERED
+    (case_id, exact_external_commitment_bytes) tuple from the frozen Stage-1A
+    cases. The artifact's records must equal it byte-for-byte and
+    order-for-order (not merely an artifact-derived hash compared to another
+    artifact-derived hash).
     """
     if artifact.structure is not expected_structure:
         raise OriginResponseContractFailure("origin artifact declares the wrong structure")
     if artifact.case_ids != expected_case_ids:
         raise OriginResponseContractFailure("origin artifact case IDs differ from expected")
+    if artifact.commitment_records != expected_commitment_records:
+        raise OriginResponseContractFailure(
+            "origin commitment records do not match the frozen expected records byte/order-exactly"
+        )
     if artifact.commitment_sha256 != commitments_hash(artifact.commitment_records):
         raise OriginResponseContractFailure("commitment records/hash mismatch")
     if artifact.model_configuration_sha256 != authoritative_luna_config_sha256:

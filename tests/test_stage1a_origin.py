@@ -329,7 +329,86 @@ def test_verify_origin_artifact_passes() -> None:
         origin_prompt=ORIGIN_PROMPT,
         expected_structure=StructureId("P"),
         expected_case_ids=tuple(c.generated.spec.case_id for c in grouped["P"]),
+        expected_commitment_records=tuple(
+            (c.generated.spec.case_id, c.textualized.commitment.encode()) for c in grouped["P"]
+        ),
     )
+
+
+def _alter_commitment_but_recompute_hashes(
+    cases: tuple[Any, ...], *, which_index: int
+) -> OriginSessionArtifact:
+    """Build an artifact whose FIRST commitment byte is altered, yet with internally
+    consistent (recomputed) commitment hash and request SHA, and otherwise valid
+    Luna evidence adopting all 12."""
+    grouped = _group_by_structure(cases)
+    pspecs = grouped["P"]
+    records = [(cid, cb) for cid, cb in _records_for(pspecs)]
+    original = records[which_index][1]
+    records[which_index] = (records[which_index][0], original + b" ALTERED")
+    recs = canonical_commitment_records(records)
+    case_ids = tuple(e for e, _ in recs)
+    raw = _luna_responses_json(list(case_ids))  # valid Luna JSON adopting all 12
+    final_out = parse_raw_provider_response(raw).encode()
+    request_sha = sha256_bytes(build_origin_request_bytes(ORIGIN_PROMPT, list(recs)))
+    return OriginSessionArtifact(
+        origin_run_id="o-P-altered",
+        structure=StructureId("P"),
+        commitment_records=recs,
+        commitment_sha256=commitments_hash(recs),  # internally recomputed
+        model_configuration_sha256=DIRECT_CONFIG_HASH,
+        request_sha256=request_sha,  # internally recomputed from altered records
+        raw_provider_response_sha256=sha256_bytes(raw),
+        raw_provider_response_bytes=raw,
+        final_output_sha256=sha256_bytes(final_out),
+        final_output_bytes=final_out,
+        timestamp="2026-08-21T00:00:00Z",
+        provider_metadata={"model": MODEL, "status": "completed"},
+    )
+
+
+def test_altered_commitment_text_fails_pre_client() -> None:
+    # Correct case ID, correct structure, but ONE commitment's frozen text altered;
+    # the artifact's commitment hash and request SHA are internally recomputed, and
+    # its Luna JSON adopts all 12. The verifier must reject on the byte-for-byte /
+    # order-for-order record mismatch BEFORE any calibration client is built.
+    cases = _cases()
+    artifacts = list(_all_origins(cases))
+    artifacts[0] = _alter_commitment_but_recompute_hashes(
+        cases, which_index=0
+    )  # replace P artifact
+    constructed: list[str] = []
+    calls: list[str] = []
+
+    def factory() -> Any:
+        constructed.append("client")
+        raise AssertionError("must not construct")
+
+    prepared = Stage1APreparedRun(
+        cases=cases,
+        scoring_prompt=_dummy_prompt(),
+        model_configuration=_dummy_config(),
+        seal=lambda: None,
+        client_factory=factory,
+        origin_artifacts=tuple(artifacts),
+    )
+    with pytest.raises(OriginResponseContractFailure, match="commitment records"):
+        prepared.run()
+    assert constructed == []
+    assert calls == []
+
+
+def test_all_five_payloads_contain_frozen_commitment_text() -> None:
+    cases = _cases()
+    for art in _all_origins(cases):
+        for cid, cbytes in art.commitment_records:
+            # The transmitted origin request payload embeds exactly the frozen
+            # commitment text associated with this case ID.
+            assert cbytes in build_origin_request_bytes(ORIGIN_PROMPT, list(art.commitment_records))
+            # and the case ID sits alongside it
+            assert cid.encode() in build_origin_request_bytes(
+                ORIGIN_PROMPT, list(art.commitment_records)
+            )
 
 
 def test_verify_missing_model_evidence_fails_closed() -> None:

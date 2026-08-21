@@ -114,17 +114,25 @@ class Stage1APreparedRun:
         expected_ids_by_structure: dict[StructureId, list[str]] = {
             structure: [] for structure in FROZEN_STRUCTURES
         }
+        expected_records_by_structure: dict[StructureId, list[tuple[str, bytes]]] = {
+            structure: [] for structure in FROZEN_STRUCTURES
+        }
         for c in self.cases:
             expected_ids_by_structure[c.generated.spec.structure_id].append(
                 c.generated.spec.case_id
             )
+            expected_records_by_structure[c.generated.spec.structure_id].append(
+                (c.generated.spec.case_id, c.textualized.commitment.encode())
+            )
         for art in self.origin_artifacts:
             expected_ids = tuple(expected_ids_by_structure[art.structure])
+            expected_records = tuple(expected_records_by_structure[art.structure])
             verify_origin_artifact(
                 art,
                 origin_prompt=ORIGIN_PROMPT,
                 expected_structure=art.structure,
                 expected_case_ids=expected_ids,
+                expected_commitment_records=expected_records,
             )
         # 2) client construction (after passing seal + origin coverage + verifier)
         client = self.client_factory()
