@@ -427,6 +427,8 @@ def _prepared_with(auth: Any, artifacts: list[Any], completed: Any) -> tuple[Any
         client_factory=factory,
         origin_artifacts=tuple(artifacts),
         completed_run=completed,
+        expected_origin_manifest_sha256=completed.manifest_sha256 if completed else None,
+        expected_completed_run_sha256=completed.completed_run_sha256 if completed else None,
     )
     return prepared, constructed
 
@@ -648,3 +650,185 @@ def test_fabricated_zero_authority_stops(tmp_path: Path) -> None:
     with pytest.raises(ValueError):
         prepared.run()
     assert constructed == []
+
+
+def test_concurrent_marker_exclusive_one_starter(tmp_path: Path) -> None:
+    # O_EXCL marker creation permits exactly one starter.
+    sink = AtomicEvidenceSink(tmp_path)
+    sink.start_batch("batch-x", "0" * 64)  # first starter wins
+    with pytest.raises(ValueError, match="already started"):
+        sink.start_batch("batch-x", "0" * 64)  # second starter must fail atomically
+    # marker recorded batch + manifest SHA
+    marker = (tmp_path / "origin-batch-batch-x.started").read_bytes()
+    assert b"batch-x" in marker and b"0" * 64 in marker
+
+
+def test_unexpected_responses_parser_bug_preserves_evidence(tmp_path: Path) -> None:
+    # Monkeypatch parse_raw_provider_response to raise a NON-typed exception AFTER
+    # transport: the current-attempt mechanical evidence must be preserved before raising.
+
+    auth = _auth()
+    manifest, specs = build_origin_run_manifest(
+        auth=auth, harness_revision="HARNESS", batch_run_id="batch-parser"
+    )
+    sink = AtomicEvidenceSink(tmp_path)
+
+    def transport(
+        *, payload: bytes
+    ) -> tuple[int | None, bytes | None, bytes | None, dict[Any, Any]]:
+        structure = FROZEN_STRUCTURES[0]
+        cids = [
+            c.case_id for c in auth.case_set.cases if c.structured_spec.structure_id == structure
+        ]
+        return (200, None, _luna_ok(cids), {"model": MODEL})
+
+    import protean_stage0.stage1a_origin_driver as driver_module
+
+    real = driver_module.parse_raw_provider_response
+    driver_module.parse_raw_provider_response = lambda b: (_ for _ in ()).throw(  # type: ignore[assignment]
+        RuntimeError("parser bug")
+    )
+    try:
+        with pytest.raises(OriginRunUnresolved):
+            execute_origin_run(
+                manifest_bytes=manifest.to_exact_bytes(),
+                expected_manifest_sha256=manifest.sha256,
+                actual_harness_revision="HARNESS",
+                auth=auth,
+                batch_run_id="batch-parser",
+                transport=transport,
+                evidence_sink=sink,
+            )
+    finally:
+        driver_module.parse_raw_provider_response = real
+    files = sorted(p for p in tmp_path.glob("origin-evidence-*.json"))
+    assert files and "origin-evidence-batch-parser-r01.json" in str(files[0])
+    ev = json.loads(files[0].read_text())
+    assert ev["success"] is False
+    assert (
+        "parser failure" in ev.get("mechanical_error", "")
+        or "artifacts" in ev.get("mechanical_error", "")
+        or "verification" in ev.get("mechanical_error", "")
+    )
+
+
+def test_unexpected_adoption_parser_bug_preserves_evidence(tmp_path: Path) -> None:
+    import protean_stage0.stage1a_origin_driver as driver_module
+
+    auth = _auth()
+    manifest, specs = build_origin_run_manifest(
+        auth=auth, harness_revision="HARNESS", batch_run_id="batch-adopt"
+    )
+    sink = AtomicEvidenceSink(tmp_path)
+
+    def transport(
+        *, payload: bytes
+    ) -> tuple[int | None, bytes | None, bytes | None, dict[Any, Any]]:
+        structure = FROZEN_STRUCTURES[0]
+        cids = [
+            c.case_id for c in auth.case_set.cases if c.structured_spec.structure_id == structure
+        ]
+        return (200, None, _luna_ok(cids), {"model": MODEL})
+
+    real = driver_module._parse_origin_adoptions_exact
+    driver_module._parse_origin_adoptions_exact = lambda *a, **k: (_ for _ in ()).throw(
+        RuntimeError("adopt bug")
+    )
+    try:
+        with pytest.raises(OriginRunUnresolved):
+            execute_origin_run(
+                manifest_bytes=manifest.to_exact_bytes(),
+                expected_manifest_sha256=manifest.sha256,
+                actual_harness_revision="HARNESS",
+                auth=auth,
+                batch_run_id="batch-adopt",
+                transport=transport,
+                evidence_sink=sink,
+            )
+    finally:
+        driver_module._parse_origin_adoptions_exact = real
+    files = sorted(p for p in tmp_path.glob("origin-evidence-*.json"))
+    assert files
+    ev = json.loads(files[0].read_text())
+    assert ev["success"] is False
+    assert (
+        "parser failure" in ev.get("mechanical_error", "")
+        or "artifacts" in ev.get("mechanical_error", "")
+        or "verification" in ev.get("mechanical_error", "")
+    )
+
+
+def test_artifact_verifier_failure_preserves_mechanical_evidence(tmp_path: Path) -> None:
+    import protean_stage0.stage1a_origin_driver as driver_module
+
+    auth = _auth()
+    manifest, specs = build_origin_run_manifest(
+        auth=auth, harness_revision="HARNESS", batch_run_id="batch-art"
+    )
+    sink = AtomicEvidenceSink(tmp_path)
+
+    def transport(
+        *, payload: bytes
+    ) -> tuple[int | None, bytes | None, bytes | None, dict[Any, Any]]:
+        structure = FROZEN_STRUCTURES[0]
+        cids = [
+            c.case_id for c in auth.case_set.cases if c.structured_spec.structure_id == structure
+        ]
+        return (200, None, _luna_ok(cids), {"model": MODEL})
+
+    real = driver_module.verify_origin_artifact
+    driver_module.verify_origin_artifact = lambda *a, **k: (_ for _ in ()).throw(
+        RuntimeError("verify bug")
+    )
+    try:
+        with pytest.raises(OriginRunUnresolved):
+            execute_origin_run(
+                manifest_bytes=manifest.to_exact_bytes(),
+                expected_manifest_sha256=manifest.sha256,
+                actual_harness_revision="HARNESS",
+                auth=auth,
+                batch_run_id="batch-art",
+                transport=transport,
+                evidence_sink=sink,
+            )
+    finally:
+        driver_module.verify_origin_artifact = real
+    files = sorted(p for p in tmp_path.glob("origin-evidence-*.json"))
+    assert files and "batch-art-r01" in files[0].name
+    ev = json.loads(files[0].read_text())
+    assert ev["success"] is False  # never persisted as success
+    assert (
+        "parser failure" in ev.get("mechanical_error", "")
+        or "artifacts" in ev.get("mechanical_error", "")
+        or "verification" in ev.get("mechanical_error", "")
+    )
+    # No successful artifact should exist for request 1.
+    assert not list(tmp_path.glob("origin-artifact-batch-art-01.json"))
+
+
+def test_missing_anchor_fails_zero_clients(tmp_path: Path) -> None:
+    from protean_stage0.artifacts import FrozenArtifact
+    from protean_stage0.stage1a_cases import build_stage1a_cases
+    from protean_stage0.stage1a_driver import Stage1APreparedRun
+    from protean_stage0.textualize import TemplateBank
+
+    cases = build_stage1a_cases(
+        template_bank=TemplateBank.from_bytes((REPO / "stage0/template-bank-v1.json").read_bytes())
+    )
+    auth = _auth()
+    result = _run_ok_batch(auth, batch="batch-anchor", sink_path=tmp_path)
+
+    def factory() -> Any:
+        raise AssertionError("must not construct")
+
+    prepared = Stage1APreparedRun(
+        cases=cases,
+        scoring_prompt=FrozenArtifact.from_bytes("p", b"x"),
+        model_configuration=direct_model_configuration(),
+        seal=lambda: None,
+        client_factory=factory,
+        origin_artifacts=tuple(result.artifacts),
+        completed_run=result.completed,  # anchors deliberately omitted -> must fail
+    )
+    with pytest.raises(ValueError, match="anchor is required"):
+        prepared.run()

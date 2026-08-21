@@ -51,6 +51,13 @@ from .stage1a_origin_run_manifest import ORIGIN_RUN_MANIFEST_VERSION, Stage1AOri
 
 ORIGIN_ARTIFACT_SCHEMA_VERSION = "stage1a-origin-artifact-v1"
 
+# Explicitly re-exported so consumers/verifiers can reference these module attrs.
+__all__ = [
+    "parse_raw_provider_response",
+    "_parse_origin_adoptions_exact",
+    "verify_origin_artifact",
+]
+
 
 class OriginFailureCategory(StrEnum):
     TRANSPORT = "transport"
@@ -400,13 +407,23 @@ class AtomicEvidenceSink:
     def _batch_marker(self, batch: str) -> Path:
         return self.out_dir / f"origin-batch-{batch}.started"
 
-    def start_batch(self, batch: str) -> None:
-        """Exclusive batch-start marker. If the batch already started, STOP before any transport."""
+    def start_batch(self, batch: str, manifest_sha256: str) -> None:
+        """Atomic/exclusive batch-start marker via O_CREAT|O_EXCL.
+
+        If the batch already started, STOP before any transport. The marker
+        durably records the batch ID and the exact manifest SHA it began with.
+        """
         self.out_dir.mkdir(parents=True, exist_ok=True)
         marker = self._batch_marker(batch)
-        if marker.exists():
-            raise ValueError(f"origin batch {batch} already started; no rerun permitted")
-        marker.write_bytes(b"started")
+        try:
+            with open(marker, "xb") as f:  # xb == O_CREAT|O_EXCL, atomic/exclusive
+                f.write(
+                    canonical_json_bytes(
+                        {"batch_run_id": batch, "manifest_sha256": manifest_sha256}
+                    )
+                )
+        except FileExistsError:
+            raise ValueError(f"origin batch {batch} already started; no rerun permitted") from None
 
     def artifact_path(self, batch: str, index: int) -> Path:
         return self.out_dir / f"origin-artifact-{batch}-{index:02d}.json"
@@ -492,7 +509,7 @@ def execute_origin_run(
         raise ValueError("provided batch/run ID does not match sealed manifest batch")
     # Exclusive batch-start marker: once a manifest+batch has begun, attempting
     # that batch again must STOP before any transport (crash leaves it non-resumable).
-    evidence_sink.start_batch(batch_run_id)
+    evidence_sink.start_batch(batch_run_id, manifest.sha256)
     # Rederive the five request specs from the freshly loaded authorities.
     _, specs = build_origin_run_manifest(
         auth=auth, harness_revision=actual_harness_revision, batch_run_id=batch_run_id
@@ -608,6 +625,19 @@ def execute_origin_run(
                 completed=None,
             )
         except Exception as exc:  # unexpected parser/internal error -> mechanical
+            mev = _evidence_for(
+                batch=batch_run_id,
+                manifest_sha=manifest.sha256,
+                spec=spec,
+                status=status,
+                err_body=None,
+                raw_response=raw_response,
+                md=md,
+                category=None,
+                success=False,
+                mechanical=f"Responses parser failure: {exc!r}",
+            )
+            evidence_sink.write(mev)
             raise OriginRunUnresolved(
                 f"unexpected parser error at request {spec.request_index}: {exc!r}"
             ) from exc
@@ -637,10 +667,79 @@ def execute_origin_run(
                 artifacts=tuple(artifacts),
                 completed=None,
             )
-        except Exception as exc:  # unexpected parser/internal error -> mechanical
+        except Exception as exc:  # unexpected adoption-parser/internal error -> mechanical
+            mev = _evidence_for(
+                batch=batch_run_id,
+                manifest_sha=manifest.sha256,
+                spec=spec,
+                status=status,
+                err_body=None,
+                raw_response=raw_response,
+                md=md,
+                category=None,
+                success=False,
+                mechanical=f"adoption parser failure: {exc!r}",
+            )
+            evidence_sink.write(mev)
             raise OriginRunUnresolved(
                 f"unexpected adoption-parser error at request {spec.request_index}: {exc!r}"
             ) from exc
+        # Build a real OriginSessionArtifact bound to manifest/batch/index/structure
+        # and verify + persist it. ANY unexpected failure here persists mechanical
+        # (success=false) evidence and raises; provider success becomes successful
+        # origin evidence ONLY after artifact verification succeeds.
+        try:
+            artifact = OriginSessionArtifact(
+                origin_run_id=f"{batch_run_id}-{spec.request_index:02d}",
+                structure=StructureId(spec.structure),
+                commitment_records=spec.commitment_records,
+                commitment_sha256=spec.commitment_hash,
+                model_configuration_sha256=DIRECT_CONFIG_HASH,
+                request_sha256=spec.request_sha256,
+                raw_provider_response_sha256=sha256_bytes(raw_response),
+                raw_provider_response_bytes=raw_response,
+                final_output_sha256=sha256_bytes(final_bytes),
+                final_output_bytes=final_bytes,
+                timestamp=datetime.now(UTC).isoformat(),
+                provider_metadata=dict(md),
+                origin_manifest_sha256=manifest.sha256,
+                batch_run_id=batch_run_id,
+                request_index=spec.request_index,
+            )
+            verify_origin_artifact(
+                artifact,
+                origin_prompt=ORIGIN_PROMPT,
+                expected_structure=StructureId(spec.structure),
+                expected_case_ids=spec.case_ids,
+                expected_commitment_records=spec.commitment_records,
+                expected_origin_manifest_sha256=manifest.sha256,
+                expected_batch_run_id=batch_run_id,
+                expected_request_index=spec.request_index,
+            )
+            # Persist each verified artifact atomically BEFORE proceeding.
+            artifact_path = evidence_sink.write_artifact(artifact)
+            persisted = OriginSessionArtifact._reconstruct(artifact_path.read_bytes())
+            if persisted.sha256 != artifact.sha256:
+                raise OriginRunUnresolved("persisted origin artifact did not round-trip exactly")
+        except Exception as exc:  # unexpected artifact/verify/persist failure -> mechanical
+            mev = _evidence_for(
+                batch=batch_run_id,
+                manifest_sha=manifest.sha256,
+                spec=spec,
+                status=status,
+                err_body=None,
+                raw_response=raw_response,
+                md=md,
+                category=None,
+                success=False,
+                mechanical=f"artifact verification/persistence failed: {exc!r}",
+            )
+            evidence_sink.write(mev)
+            raise OriginRunUnresolved(
+                f"mechanical error at request {spec.request_index}: {exc!r}"
+            ) from exc
+        # Provider success is confirmed origin evidence ONLY after the artifact
+        # was built, verified, and durably persisted.
         ev = _evidence_for(
             batch=batch_run_id,
             manifest_sha=manifest.sha256,
@@ -652,42 +751,8 @@ def execute_origin_run(
             category=None,
             success=True,
         )
-        if evidence_sink:
-            evidence_sink.write(ev)
+        evidence_sink.write(ev)
         evidence.append(ev)
-        # Build a real OriginSessionArtifact bound to manifest/batch/index/structure.
-        artifact = OriginSessionArtifact(
-            origin_run_id=f"{batch_run_id}-{spec.request_index:02d}",
-            structure=StructureId(spec.structure),
-            commitment_records=spec.commitment_records,
-            commitment_sha256=spec.commitment_hash,
-            model_configuration_sha256=DIRECT_CONFIG_HASH,
-            request_sha256=spec.request_sha256,
-            raw_provider_response_sha256=sha256_bytes(raw_response),
-            raw_provider_response_bytes=raw_response,
-            final_output_sha256=sha256_bytes(final_bytes),
-            final_output_bytes=final_bytes,
-            timestamp=ev.timestamp,
-            provider_metadata=dict(md),
-            origin_manifest_sha256=manifest.sha256,
-            batch_run_id=batch_run_id,
-            request_index=spec.request_index,
-        )
-        verify_origin_artifact(
-            artifact,
-            origin_prompt=ORIGIN_PROMPT,
-            expected_structure=StructureId(spec.structure),
-            expected_case_ids=spec.case_ids,
-            expected_commitment_records=spec.commitment_records,
-            expected_origin_manifest_sha256=manifest.sha256,
-            expected_batch_run_id=batch_run_id,
-            expected_request_index=spec.request_index,
-        )
-        # Persist each verified artifact atomically BEFORE proceeding to the next.
-        artifact_path = evidence_sink.write_artifact(artifact)
-        persisted = OriginSessionArtifact._reconstruct(artifact_path.read_bytes())
-        if persisted.sha256 != artifact.sha256:
-            raise OriginRunUnresolved("persisted origin artifact did not round-trip exactly")
         artifacts.append(artifact)
 
     # Completed authority only after all five artifact files exist and their SHAs
