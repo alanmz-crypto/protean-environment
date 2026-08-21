@@ -12,7 +12,7 @@ from typing import Any
 
 import pytest
 
-from protean_stage0 import stage0_driver as drv
+import protean_stage0.stage0_driver as drv
 from protean_stage0.artifacts import FrozenArtifact, FrozenCaseSet
 from protean_stage0.direct_config import direct_model_configuration
 from protean_stage0.manifest import ExperimentalBindings, RunManifest
@@ -21,7 +21,28 @@ from protean_stage0.validation import load_evaluator_provenance
 
 RESTART_CASE_SHA = "7099a821c74397bff188a630ed9ca84c8aeed6185947ef99bda0c7a66ef1a03e"
 ORIGINAL_CASE_SHA = "06fe8d471b1fbbc226696ed6d80b706cc84a6040a7fb91a93814343420291556"
-RESTART_CASE_ARTIFACT = drv.REPO_ROOT / f"stage0/runs/restart-case-set-{RESTART_CASE_SHA}.json"
+_RESTART_SEED = "protean-stage0-restart-v1:9d8b7b3325b4ece3"
+_RESTART_TEXT_SEED = "protean-stage0-restart-text-v1:9d8b7b3325b4ece3"
+
+
+def _restart_case_set_bytes() -> bytes:
+    """Reproduce the frozen restart case-set canonical bytes deterministically."""
+    from protean_stage0.generator import generate_structured_cases
+    from protean_stage0.textualize import TemplateBank, textualize_case
+
+    bank = TemplateBank.from_bytes((drv.REPO_ROOT / "stage0/template-bank-v1.json").read_bytes())
+    generated = generate_structured_cases(_RESTART_SEED)
+    cases = tuple(textualize_case(item, seed=_RESTART_TEXT_SEED, bank=bank) for item in generated)
+    frozen = FrozenCaseSet.from_cases(cases)
+    assert frozen.sha256 == RESTART_CASE_SHA, "restart case-set reproduction mismatch"
+    return frozen.artifact_bytes
+
+
+@pytest.fixture()
+def restart_artifact(tmp_path: Path) -> Path:
+    path = tmp_path / f"restart-case-set-{RESTART_CASE_SHA}.json"
+    path.write_bytes(_restart_case_set_bytes())
+    return path
 
 
 def _frozen_docs() -> tuple[FrozenArtifact, FrozenArtifact]:
@@ -63,11 +84,10 @@ def _manifest_for(
 
 
 @pytest.fixture()
-def restart_materials() -> tuple[Any, ...]:
+def restart_materials(restart_artifact: Path) -> tuple[Any, ...]:
     head = drv.current_git_head()
-    assert RESTART_CASE_ARTIFACT.exists(), "restart case-set artifact must exist"
     fresh_set, fresh_generated = drv.load_frozen_case_set(
-        RESTART_CASE_ARTIFACT, expected_sha=RESTART_CASE_SHA
+        restart_artifact, expected_sha=RESTART_CASE_SHA
     )
     original_set, original_generated = drv.load_frozen_case_set()
     restart_manifest = _manifest_for(
@@ -103,7 +123,7 @@ def test_restart_manifest_with_original_artifact_refuses(
 
 
 def test_original_manifest_with_restart_artifact_refuses(
-    restart_materials: tuple[Any, ...],
+    restart_materials: tuple[Any, ...], restart_artifact: Path
 ) -> None:
     _, _, _, original_set, original_generated = restart_materials
     head = drv.current_git_head()
@@ -114,7 +134,7 @@ def test_original_manifest_with_restart_artifact_refuses(
     binding = ExperimentalBindings(prompt=prompt, model_configuration=direct_model_configuration())
     # original manifest binds 06fe8d47... but supplied artifact is the restart one.
     fresh_set, fresh_generated = drv.load_frozen_case_set(
-        RESTART_CASE_ARTIFACT, expected_sha=RESTART_CASE_SHA
+        restart_artifact, expected_sha=RESTART_CASE_SHA
     )
     original_manifest = RunManifest.create(
         protocol=protocol,
@@ -138,10 +158,10 @@ def test_original_manifest_with_restart_artifact_refuses(
         )
 
 
-def test_tampered_case_set_bytes_refuse() -> None:
+def test_tampered_case_set_bytes_refuse(restart_artifact: Path) -> None:
     import tempfile
 
-    raw = RESTART_CASE_ARTIFACT.read_bytes()
+    raw = restart_artifact.read_bytes()
     tampered = raw[:-2] + bytes([raw[-2] ^ 0x01]) + raw[-1:]
     with tempfile.TemporaryDirectory() as td:
         p = Path(td) / "tampered-case-set.json"
@@ -151,7 +171,7 @@ def test_tampered_case_set_bytes_refuse() -> None:
 
 
 def test_same_reconstructed_set_reaches_scoring(
-    restart_materials: tuple[Any, ...], monkeypatch: pytest.MonkeyPatch
+    restart_materials: tuple[Any, ...], restart_artifact: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     # The exact reconstructed set passed to the seal must be the SAME object that
     # reaches scoring; the driver must never validate one set and score another.
@@ -183,7 +203,7 @@ def test_same_reconstructed_set_reaches_scoring(
                 "--manifest",
                 "restart.json",
                 "--case-set",
-                str(RESTART_CASE_ARTIFACT),
+                str(restart_artifact),
                 "--out-dir",
                 str(drv.REPO_ROOT / "stage0/runs"),
             ]
