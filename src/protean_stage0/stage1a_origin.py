@@ -159,6 +159,9 @@ class OriginSessionArtifact:
     final_output_bytes: bytes  # extracted assistant ADOPT-line output
     timestamp: str
     provider_metadata: Mapping[str, Any]
+    origin_manifest_sha256: str
+    batch_run_id: str
+    request_index: int
 
     def __post_init__(self) -> None:
         if self.structure not in FROZEN_STRUCTURES:
@@ -167,6 +170,12 @@ class OriginSessionArtifact:
             raise ValueError("commitment records/hash mismatch")
         if len(self.request_sha256) != 64:
             raise ValueError("request_sha256 must be SHA-256 hex")
+        if len(self.origin_manifest_sha256) != 64:
+            raise ValueError("origin_manifest_sha256 must be SHA-256 hex")
+        if not self.batch_run_id:
+            raise ValueError("batch_run_id must be non-empty")
+        if self.request_index < 1 or self.request_index > 5:
+            raise ValueError("request_index must be in 1..5")
         if self.raw_provider_response_sha256 != sha256_bytes(self.raw_provider_response_bytes):
             raise ValueError("raw provider-response bytes/SHA mismatch")
         if self.final_output_sha256 != sha256_bytes(self.final_output_bytes):
@@ -191,6 +200,9 @@ class OriginSessionArtifact:
             "final_output_bytes": self.final_output_bytes.decode("utf-8", "replace"),
             "final_output_sha256": self.final_output_sha256,
             "model_configuration_sha256": self.model_configuration_sha256,
+            "origin_manifest_sha256": self.origin_manifest_sha256,
+            "batch_run_id": self.batch_run_id,
+            "request_index": self.request_index,
             "origin_run_id": self.origin_run_id,
             "provider_metadata": dict(self.provider_metadata),
             "raw_provider_response_base64": base64.b64encode(
@@ -231,6 +243,9 @@ def verify_origin_artifact(
     expected_commitment_records: tuple[tuple[str, bytes], ...],
     authoritative_luna_config_sha256: str = DIRECT_CONFIG_HASH,
     expected_provider_model: str = MODEL,
+    expected_origin_manifest_sha256: str | None = None,
+    expected_batch_run_id: str | None = None,
+    expected_request_index: int | None = None,
 ) -> None:
     """Full mechanical real-origin verifier. Raises unless EVERY proof holds.
 
@@ -290,3 +305,13 @@ def verify_origin_artifact(
     )
     if returned is not None and returned != expected_provider_model:
         raise OriginResponseContractFailure("provider model does not match expected")
+    # Live-run binding checks (fail closed if an expected live-run authority is given).
+    if (
+        expected_origin_manifest_sha256 is not None
+        and artifact.origin_manifest_sha256 != expected_origin_manifest_sha256
+    ):
+        raise OriginResponseContractFailure("artifact origin-manifest SHA mismatch")
+    if expected_batch_run_id is not None and artifact.batch_run_id != expected_batch_run_id:
+        raise OriginResponseContractFailure("artifact batch/run ID mismatch")
+    if expected_request_index is not None and artifact.request_index != expected_request_index:
+        raise OriginResponseContractFailure("artifact request index mismatch")

@@ -168,7 +168,7 @@ def test_wrong_expected_manifest_sha_stops_zero_transport() -> None:
     auth = _auth()
     manifest, specs = _plan(auth)
     t, calls = _ok_transport(auth, specs)
-    with pytest.raises(ValueError, match="expected value"):
+    with pytest.raises(ValueError, match="manifest SHA"):
         execute_origin_run(
             manifest_bytes=manifest.to_exact_bytes(),
             expected_manifest_sha256="0" * 64,
@@ -376,3 +376,98 @@ def test_seal_validate_checks_request_binding() -> None:
             actual_harness_revision="HARNESS",
             auth=auth,
         )
+
+
+def _run_ok_batch(auth: Any, batch: str = "batch-ok", harness: str = "HARNESS") -> Any:
+    manifest, specs = build_origin_run_manifest(
+        auth=auth, harness_revision=harness, batch_run_id=batch
+    )
+    t, _ = _ok_transport(auth, specs)
+    return execute_origin_run(
+        manifest_bytes=manifest.to_exact_bytes(),
+        expected_manifest_sha256=manifest.sha256,
+        actual_harness_revision=harness,
+        auth=auth,
+        batch_run_id=batch,
+        transport=t,
+    )
+
+
+def _prepared_with(auth: Any, artifacts: list[Any], completed: Any) -> tuple[Any, list[str]]:
+    from protean_stage0.artifacts import FrozenArtifact
+    from protean_stage0.stage1a_cases import build_stage1a_cases
+    from protean_stage0.stage1a_driver import Stage1APreparedRun
+    from protean_stage0.textualize import TemplateBank
+
+    cases = build_stage1a_cases(
+        template_bank=TemplateBank.from_bytes((REPO / "stage0/template-bank-v1.json").read_bytes())
+    )
+    constructed: list[str] = []
+
+    def factory() -> Any:
+        constructed.append("client")
+        return None
+
+    prepared = Stage1APreparedRun(
+        cases=cases,
+        scoring_prompt=FrozenArtifact.from_bytes("p", b"x"),
+        model_configuration=direct_model_configuration(),
+        seal=lambda: None,
+        client_factory=factory,
+        origin_artifacts=tuple(artifacts),
+        completed_run=completed,
+    )
+    return prepared, constructed
+
+
+def test_calibration_requires_completed_batch() -> None:
+    auth = _auth()
+    result = _run_ok_batch(auth)
+    assert result.completed is not None
+    # Five standalone artifacts without a completed authority must be rejected.
+    from protean_stage0.artifacts import FrozenArtifact
+    from protean_stage0.stage1a_cases import build_stage1a_cases
+    from protean_stage0.stage1a_driver import Stage1APreparedRun
+    from protean_stage0.textualize import TemplateBank
+
+    cases = build_stage1a_cases(
+        template_bank=TemplateBank.from_bytes((REPO / "stage0/template-bank-v1.json").read_bytes())
+    )
+    prepared = Stage1APreparedRun(
+        cases=cases,
+        scoring_prompt=FrozenArtifact.from_bytes("p", b"x"),
+        model_configuration=direct_model_configuration(),
+        seal=lambda: None,
+        client_factory=lambda: (_ for _ in ()).throw(AssertionError("must not construct")),
+        origin_artifacts=result.artifacts,
+        completed_run=None,  # no completed authority
+    )
+    with pytest.raises(ValueError, match="CompletedOriginRun"):
+        prepared.run()
+
+
+def test_cross_batch_mixing_rejected() -> None:
+    auth = _auth()
+    result_a = _run_ok_batch(auth, batch="batch-a")
+    result_b = _run_ok_batch(auth, batch="batch-b")
+    # Take 4 artifacts from batch-a and 1 from batch-b while keeping batch-a's
+    # completed authority => artifact SHA at the swapped index won't match.
+    mixed = list(result_a.artifacts)
+    idx_b_art = next(a for a in result_b.artifacts if a.request_index == 5)
+    mixed[4] = idx_b_art
+    prepared, constructed = _prepared_with(auth, mixed, result_a.completed)
+    with pytest.raises(ValueError):
+        prepared.run()
+    assert constructed == []
+
+
+def test_completed_4of5_rejected() -> None:
+    auth = _auth()
+    result = _run_ok_batch(auth)
+    from dataclasses import replace
+
+    bad = replace(result.completed, attempts=4, successes=4)
+    prepared, constructed = _prepared_with(auth, list(result.artifacts), bad)
+    with pytest.raises(ValueError):
+        prepared.run()
+    assert constructed == []

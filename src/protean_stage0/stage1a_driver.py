@@ -94,6 +94,9 @@ class Stage1APreparedRun:
     seal: Any  # callable that raises on mismatch (validate_stage1a_manifest_seal)
     client_factory: Any  # callable returning a ModelClient
     origin_artifacts: tuple[Any, ...] = ()
+    completed_run: Any = (
+        None  # CompletedOriginRun (required; 5 standalone artifacts are NOT enough)
+    )
 
     def run(self) -> list[SingleScoreCall]:
         # 1) seal validation + MANDATORY real-origin coverage. Structure/coverage
@@ -134,7 +137,38 @@ class Stage1APreparedRun:
                 expected_case_ids=expected_ids,
                 expected_commitment_records=expected_records,
             )
-        # 2) client construction (after passing seal + origin coverage + verifier)
+        # 1b) MANDATORY completed-run authority: five standalone artifacts are NOT
+        #     sufficient. Require one completed run (5/5/0) whose manifest SHA and
+        #     batch match all artifacts, with request indices 1..5 exactly once,
+        #     expected structures exactly once, and per-index artifact SHAs
+        #     matching the completed authority.
+        if self.completed_run is None:
+            raise ValueError("Stage-1A calibration requires a sealed CompletedOriginRun")
+        completed = self.completed_run
+        if (
+            completed.attempts != 5
+            or completed.successes != 5
+            or completed.failures != 0
+            or len(completed.artifact_shas) != 5
+        ):
+            raise ValueError("CompletedOriginRun must be 5 attempts / 5 successes / 0 failures")
+        if len(self.origin_artifacts) != 5:
+            raise ValueError("calibration requires exactly five origin artifacts")
+        artifacts_by_index = {a.request_index: a for a in self.origin_artifacts}
+        if set(artifacts_by_index) != {1, 2, 3, 4, 5}:
+            raise ValueError("origin artifacts must have request indices 1..5 exactly once")
+        structures_seen = {a.structure for a in self.origin_artifacts}
+        if structures_seen != set(FROZEN_STRUCTURES):
+            raise ValueError("origin artifacts must cover every frozen structure exactly once")
+        for art in self.origin_artifacts:
+            if art.batch_run_id != completed.batch_run_id:
+                raise ValueError("origin artifact batch/run ID does not match completed run")
+            if getattr(art, "origin_manifest_sha256", None) != completed.manifest_sha256:
+                raise ValueError("origin artifact manifest SHA does not match completed run")
+            if art.sha256 != completed.artifact_shas[art.request_index - 1]:
+                raise ValueError("origin artifact SHA does not match completed-run authority")
+        # 2) client construction (after passing seal + origin coverage + verifier
+        #    + completed-run authority)
         client = self.client_factory()
         # 3) scoring (one decision call per case)
         loop = Stage1AScoringLoop(

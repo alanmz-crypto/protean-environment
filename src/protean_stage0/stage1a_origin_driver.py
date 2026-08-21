@@ -20,6 +20,7 @@ binding the five artifact SHAs (not merely request SHAs).
 from __future__ import annotations
 
 import base64
+import json
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -30,11 +31,13 @@ from typing import Any, Protocol
 from .artifacts import canonical_json_bytes, sha256_bytes
 from .direct_config import DIRECT_CONFIG_HASH
 from .grammar import FROZEN_STRUCTURES, StructureId
+from .provider_failure import ResponseContractFailure
 from .stage1a_authority import LoadedStage1AAuthority
 from .stage1a_origin import (
     ORIGIN_PROMPT,
     ORIGIN_PROMPT_SHA256,
     ORIGIN_RESPONSE_CONTRACT_SHA256,
+    OriginResponseContractFailure,
     OriginSessionArtifact,
     _parse_origin_adoptions_exact,
     build_origin_request_bytes,
@@ -43,7 +46,9 @@ from .stage1a_origin import (
     parse_raw_provider_response,
     verify_origin_artifact,
 )
-from .stage1a_origin_run_manifest import Stage1AOriginRunManifest
+from .stage1a_origin_run_manifest import ORIGIN_RUN_MANIFEST_VERSION, Stage1AOriginRunManifest
+
+ORIGIN_ARTIFACT_SCHEMA_VERSION = "stage1a-origin-artifact-v1"
 
 
 class OriginFailureCategory(StrEnum):
@@ -136,6 +141,15 @@ class OriginRequestEvidence:
         return sha256_bytes(self.to_exact_bytes())
 
 
+def _validate_5_5_0(completed: CompletedOriginRun) -> bool:
+    return (
+        completed.attempts == 5
+        and completed.successes == 5
+        and completed.failures == 0
+        and len(completed.artifact_shas) == 5
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class CompletedOriginRun:
     """The ONLY authority that unlocks calibration: a sealed 5/5 successful batch.
@@ -165,6 +179,24 @@ class CompletedOriginRun:
                 "successes": self.successes,
             }
         )
+
+    @classmethod
+    def from_exact_bytes(cls, raw: bytes) -> CompletedOriginRun:
+        """Reconstruct exactly; require canonical reserialization + 5/5/0."""
+        data = json.loads(raw.decode("utf-8"))
+        obj = cls(
+            manifest_sha256=data["manifest_sha256"],
+            batch_run_id=data["batch_run_id"],
+            artifact_shas=tuple(data["artifact_shas"]),
+            attempts=data["attempts"],
+            successes=data["successes"],
+            failures=data["failures"],
+        )
+        if obj.to_exact_bytes() != raw:
+            raise ValueError("completed-run bytes are not canonical")
+        if not _validate_5_5_0(obj):
+            raise ValueError("completed run must be 5 attempts / 5 successes / 0 failures")
+        return obj
 
 
 @dataclass(frozen=True, slots=True)
@@ -271,6 +303,12 @@ def validate_origin_run_manifest_seal(
         raise ValueError("origin manifest must require exactly 5 requests")
     if manifest.ordered_structures != tuple(s.value for s in FROZEN_STRUCTURES):
         raise ValueError("origin manifest ordered structures mismatch")
+    if manifest.manifest_version != ORIGIN_RUN_MANIFEST_VERSION:
+        raise ValueError("origin manifest version mismatch")
+    if manifest.artifact_schema_version != ORIGIN_ARTIFACT_SCHEMA_VERSION:
+        raise ValueError("origin artifact schema version mismatch")
+    if manifest.origin_response_contract_sha256 != ORIGIN_RESPONSE_CONTRACT_SHA256:
+        raise ValueError("origin response-contract version/SHA mismatch")
 
     # Recompute per-structure case IDs + commitment hashes + request SHAs from the
     # freshly loaded authorities and compare exactly.
@@ -358,6 +396,17 @@ class AtomicEvidenceSink:
         tmp.replace(path)  # atomic rename
         return path
 
+    def write_completed(self, completed: CompletedOriginRun) -> Path:
+        """Persist the completed-run authority atomically, only on 5/5."""
+        if not _validate_5_5_0(completed):
+            raise ValueError("cannot persist a completed-run authority that is not 5/5/0")
+        self.out_dir.mkdir(parents=True, exist_ok=True)
+        path = self.out_dir / f"origin-completed-{completed.batch_run_id}.json"
+        tmp = path.with_suffix(".json.tmp")
+        tmp.write_bytes(completed.to_exact_bytes())
+        tmp.replace(path)
+        return path
+
 
 @dataclass(frozen=True, slots=True)
 class OriginRunResult:
@@ -383,7 +432,13 @@ def execute_origin_run(
     authorities -> rederives request bytes -> compares every SHA -> ONLY THEN
     constructs the provider transport. Any mismatch => 0 provider calls.
     """
+    # REQUIRED before reconstruction: the raw bytes must hash to the expected SHA.
+    if sha256_bytes(manifest_bytes) != expected_manifest_sha256:
+        raise ValueError("origin manifest bytes do not hash to the expected manifest SHA")
     manifest = Stage1AOriginRunManifest._reconstruct(manifest_bytes)
+    # Canonical reserialization must equal the supplied bytes (substitution fails).
+    if manifest.to_exact_bytes() != manifest_bytes:
+        raise ValueError("origin manifest bytes are not canonical/substituted")
     validate_origin_run_manifest_seal(
         manifest=manifest,
         manifest_sha256=expected_manifest_sha256,
@@ -463,10 +518,11 @@ def execute_origin_run(
                 artifacts=tuple(artifacts),
                 completed=None,
             )
-        # Strict Responses parsing; any violation -> RESPONSES_CONTRACT.
+        # Strict Responses parsing; only the repository's typed contract failure
+        # maps to RESPONSES_CONTRACT. Anything else is mechanical.
         try:
             parse_raw_provider_response(raw_response)
-        except Exception:
+        except ResponseContractFailure:
             ev = _evidence_for(
                 batch=batch_run_id,
                 manifest_sha=manifest.sha256,
@@ -486,12 +542,17 @@ def execute_origin_run(
                 artifacts=tuple(artifacts),
                 completed=None,
             )
-        # Extraction of final output + exact origin-adoption-v1 acceptance.
+        except Exception as exc:  # unexpected parser/internal error -> mechanical
+            raise OriginRunUnresolved(
+                f"unexpected parser error at request {spec.request_index}: {exc!r}"
+            ) from exc
+        # Extraction of final output + exact origin-adoption-v1 acceptance. Only the
+        # typed OriginResponseContractFailure maps to ADOPTION_CONTRACT.
         try:
             final_text = parse_raw_provider_response(raw_response)
             final_bytes = final_text.encode()
             _parse_origin_adoptions_exact(final_bytes, spec.case_ids)
-        except Exception:
+        except OriginResponseContractFailure:
             ev = _evidence_for(
                 batch=batch_run_id,
                 manifest_sha=manifest.sha256,
@@ -511,6 +572,10 @@ def execute_origin_run(
                 artifacts=tuple(artifacts),
                 completed=None,
             )
+        except Exception as exc:  # unexpected parser/internal error -> mechanical
+            raise OriginRunUnresolved(
+                f"unexpected adoption-parser error at request {spec.request_index}: {exc!r}"
+            ) from exc
         ev = _evidence_for(
             batch=batch_run_id,
             manifest_sha=manifest.sha256,
@@ -539,6 +604,9 @@ def execute_origin_run(
             final_output_bytes=final_bytes,
             timestamp=ev.timestamp,
             provider_metadata=dict(md),
+            origin_manifest_sha256=manifest.sha256,
+            batch_run_id=batch_run_id,
+            request_index=spec.request_index,
         )
         verify_origin_artifact(
             artifact,
@@ -546,6 +614,9 @@ def execute_origin_run(
             expected_structure=StructureId(spec.structure),
             expected_case_ids=spec.case_ids,
             expected_commitment_records=spec.commitment_records,
+            expected_origin_manifest_sha256=manifest.sha256,
+            expected_batch_run_id=batch_run_id,
+            expected_request_index=spec.request_index,
         )
         artifacts.append(artifact)
 
@@ -558,6 +629,8 @@ def execute_origin_run(
         successes=5,
         failures=0,
     )
+    if evidence_sink is not None:
+        evidence_sink.write_completed(completed)  # persist only on 5/5 verified success
     return OriginRunResult(
         status=OriginRunStatus.COMPLETED,
         evidence=tuple(evidence),

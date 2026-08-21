@@ -113,6 +113,9 @@ def _origin_artifact(
     origin_run_id: str,
     adopt_text: str | None = None,
     raw_override: bytes | None = None,
+    origin_manifest_sha256: str = "0" * 64,
+    batch_run_id: str | None = None,
+    request_index: int = 1,
 ) -> OriginSessionArtifact:
     """Build a valid artifact from real wire evidence (fake Luna Responses JSON)."""
     records = canonical_commitment_records(_records_for(cases))
@@ -137,16 +140,29 @@ def _origin_artifact(
         final_output_bytes=final_out,
         timestamp="2026-08-21T00:00:00Z",
         provider_metadata={"model": MODEL, "status": "completed"},
+        origin_manifest_sha256=origin_manifest_sha256,
+        batch_run_id=batch_run_id if batch_run_id is not None else origin_run_id,
+        request_index=request_index,
     )
 
 
 def _all_origins(
-    cases: tuple[Any, ...], run_base: str = "origin-"
+    cases: tuple[Any, ...],
+    run_base: str = "origin-",
+    batch_run_id: str = "shared-batch-1",
+    origin_manifest_sha256: str = "0" * 64,
 ) -> tuple[OriginSessionArtifact, ...]:
     grouped = _group_by_structure(cases)
     return tuple(
-        _origin_artifact(s.value, grouped[s.value], origin_run_id=run_base + s.value)
-        for s in FROZEN_STRUCTURES
+        _origin_artifact(
+            s.value,
+            grouped[s.value],
+            origin_run_id=f"{run_base}{s.value}",
+            batch_run_id=batch_run_id,
+            origin_manifest_sha256=origin_manifest_sha256,
+            request_index=idx,
+        )
+        for idx, s in enumerate(FROZEN_STRUCTURES, start=1)
     )
 
 
@@ -364,6 +380,9 @@ def _alter_commitment_but_recompute_hashes(
         final_output_bytes=final_out,
         timestamp="2026-08-21T00:00:00Z",
         provider_metadata={"model": MODEL, "status": "completed"},
+        origin_manifest_sha256="0" * 64,
+        batch_run_id="o-P-altered",
+        request_index=1,
     )
 
 
@@ -477,13 +496,25 @@ def test_preflight_ordering_seal_then_client_then_scoring() -> None:
         return _Client()
 
     cases = _cases()
+    artifacts = _all_origins(cases)
+    from protean_stage0.stage1a_origin_driver import CompletedOriginRun
+
+    completed = CompletedOriginRun(
+        manifest_sha256="0" * 64,
+        batch_run_id="shared-batch-1",
+        artifact_shas=tuple(a.sha256 for a in artifacts),
+        attempts=5,
+        successes=5,
+        failures=0,
+    )
     prepared = Stage1APreparedRun(
         cases=cases,
         scoring_prompt=FrozenArtifact.from_bytes("p", b"x"),
         model_configuration=_dummy_config(),
         seal=lambda: None,
         client_factory=factory,
-        origin_artifacts=_all_origins(cases),
+        origin_artifacts=artifacts,
+        completed_run=completed,
     )
     prepared.run()
     assert constructed == ["client"]
