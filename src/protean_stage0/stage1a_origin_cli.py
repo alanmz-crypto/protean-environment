@@ -40,6 +40,7 @@ from .direct_config import ENDPOINT
 from .stage1a_authority import load_authority_artifacts
 from .stage1a_origin_driver import (
     AtomicEvidenceSink,
+    OriginRunStatus,
     build_origin_run_manifest,
     execute_origin_run,
     validate_origin_run_manifest_seal,
@@ -192,7 +193,8 @@ def run_cli(argv: list[str] | None = None) -> int:
         print(f"status={result.status.value}")
         if result.completed:
             print(f"completed_run_sha256={result.completed.completed_run_sha256}")
-        return 0
+        # 0 only for a COMPLETED run; evidence is preserved for any other outcome.
+        return 0 if result.status.value == OriginRunStatus.COMPLETED.value else 1
 
     # Prepare mode (default): zero provider calls.
     batch_run_id, path, sha = prepare_live_origin_manifest(head)

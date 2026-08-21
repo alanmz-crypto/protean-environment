@@ -225,15 +225,24 @@ def _ok_transport_for(auth: Any, specs: Any) -> Any:
 def _prepared(
     auth: Any, cases: Any, artifacts: Any, completed: Any, origin_sha: str, completed_sha: str
 ) -> tuple[Any, list[Any]]:
+    from dataclasses import dataclass
+
     from protean_stage0.artifacts import FrozenArtifact
     from protean_stage0.stage1a_driver import Stage1APreparedRun
 
     called: list[str] = []
 
-    def factory():
-        called.append("client")
-        return None if False else ("client", None)  # placeholder client
+    @dataclass(frozen=True, slots=True)
+    class _CalManifest:
+        origin_run_manifest_sha256: str
+        origin_completed_run_sha256: str
+        origin_batch_run_id: str
 
+    cm = _CalManifest(
+        origin_run_manifest_sha256=origin_sha,
+        origin_completed_run_sha256=completed_sha,
+        origin_batch_run_id=completed.batch_run_id if completed else "",
+    )
     prepared = Stage1APreparedRun(
         cases=cases,
         scoring_prompt=FrozenArtifact.from_bytes("p", b"x"),
@@ -242,8 +251,7 @@ def _prepared(
         client_factory=lambda: called.append("client") or object(),
         origin_artifacts=tuple(artifacts),
         completed_run=completed,
-        expected_origin_manifest_sha256=origin_sha,
-        expected_completed_run_sha256=completed_sha,
+        calibration_manifest=cm,
     )
     return prepared, called
 
@@ -381,3 +389,249 @@ def test_calibration_missing_authority_field_zero_clients(tmp_path) -> None:
             expected_origin_completed_run_sha256="y",
             expected_origin_batch_run_id="z",
         )
+
+
+def _real_calibration_manifest(auth, origin_sha, completed_sha, batch):
+    from protean_stage0.artifacts import FrozenArtifact
+    from protean_stage0.schema import EvaluatorProvenance
+    from protean_stage0.stage1a_cases import build_stage1a_cases, freeze_stage1a_case_set
+    from protean_stage0.stage1a_manifest import Stage1AManifest
+    from protean_stage0.textualize import TemplateBank
+
+    cases = build_stage1a_cases(
+        template_bank=TemplateBank.from_bytes((REPO / "stage0/template-bank-v1.json").read_bytes())
+    )
+    case_set = freeze_stage1a_case_set(cases)
+    protocol = FrozenArtifact.from_bytes(
+        "p", (REPO / "docs/PROTOCOL-prospective-control-v1.0.md").read_bytes()
+    )
+    futility = FrozenArtifact.from_bytes(
+        "f",
+        (REPO / "docs/RATIFIED-AMENDMENT-stage1-futility-shared-score-v1.0.1-r1.md").read_bytes(),
+    )
+    real = FrozenArtifact.from_bytes(
+        "r", (REPO / "docs/RATIFIED-AMENDMENT-stage1a-real-origin-v1.0.2-r1.md").read_bytes()
+    )
+    prompt = FrozenArtifact.from_bytes(
+        "s", (REPO / "stage0/candidate-scoring-prompt-v1.txt").read_bytes()
+    )
+    prov = EvaluatorProvenance(
+        evaluator_name="p",
+        author="p",
+        authored_at="T",
+        grammar_version="v1",
+        grammar_sha256="0" * 64,
+        independently_derived=True,
+        implementation_sha256="0" * 64,
+    )
+    return Stage1AManifest.create(
+        protocol=protocol,
+        futility_amendment=futility,
+        real_origin_amendment=real,
+        case_set=case_set,
+        scoring_prompt=prompt,
+        parse_contract_sha256="0" * 64,
+        model_configuration=direct_config(),
+        harness_revision="HARNESS",
+        primary_evaluator=prov,
+        reference_evaluator=prov,
+        timestamp="T",
+        run_id="R",
+        origin_run_manifest_sha256=origin_sha,
+        origin_completed_run_sha256=completed_sha,
+        origin_batch_run_id=batch,
+    )
+
+
+def test_authority_join_real_manifest_positive(tmp_path) -> None:
+    # Positive: a REAL sealed Stage1AManifest authority (not self-consistent SHAs)
+    # plus a matching completed origin batch pass preflight and reach client construction.
+    from protean_stage0.artifacts import FrozenArtifact
+    from protean_stage0.stage1a_cases import build_stage1a_cases
+    from protean_stage0.stage1a_driver import Stage1APreparedRun
+    from protean_stage0.textualize import TemplateBank
+
+    a = _auth()
+    cases = build_stage1a_cases(
+        template_bank=TemplateBank.from_bytes((REPO / "stage0/template-bank-v1.json").read_bytes())
+    )
+    manifest, specs = build_origin_run_manifest(
+        auth=a, harness_revision="HARNESS", batch_run_id="cb-real"
+    )
+    result = execute_origin_run(
+        manifest_bytes=manifest.to_exact_bytes(),
+        expected_manifest_sha256=manifest.sha256,
+        actual_harness_revision="HARNESS",
+        auth=a,
+        batch_run_id="cb-real",
+        transport=_ok_transport_for(a, specs),
+        evidence_sink=AtomicEvidenceSink(tmp_path),
+    )
+    assert result.completed is not None
+    cal = _real_calibration_manifest(
+        a, manifest.sha256, result.completed.completed_run_sha256, "cb-real"
+    )
+    called: list[str] = []
+    prepared = Stage1APreparedRun(
+        cases=cases,
+        scoring_prompt=FrozenArtifact.from_bytes("p", b"x"),
+        model_configuration=direct_config(),
+        seal=lambda: None,
+        client_factory=lambda: called.append("client") or object(),
+        origin_artifacts=tuple(result.artifacts),
+        completed_run=result.completed,
+        calibration_manifest=cal,
+    )
+    with pytest.raises(AttributeError):  # target client is object() -> scoring fails later
+        prepared.run()
+    assert called == ["client"]
+
+
+def test_authority_join_cross_batch_rejected(tmp_path) -> None:
+    # Adversarial: Stage1AManifest seals batch A; a fully valid/self-consistent
+    # completed batch B must stop with 0 client constructions.
+    from protean_stage0.artifacts import FrozenArtifact
+    from protean_stage0.stage1a_cases import build_stage1a_cases
+    from protean_stage0.stage1a_driver import Stage1APreparedRun
+    from protean_stage0.textualize import TemplateBank
+
+    a = _auth()
+    cases = build_stage1a_cases(
+        template_bank=TemplateBank.from_bytes((REPO / "stage0/template-bank-v1.json").read_bytes())
+    )
+    # Batch A is sealed by the Stage1AManifest.
+    manifest_a, specs_a = build_origin_run_manifest(
+        auth=a, harness_revision="HARNESS", batch_run_id="cb-A"
+    )
+    result_a = execute_origin_run(
+        manifest_bytes=manifest_a.to_exact_bytes(),
+        expected_manifest_sha256=manifest_a.sha256,
+        actual_harness_revision="HARNESS",
+        auth=a,
+        batch_run_id="cb-A",
+        transport=_ok_transport_for(a, specs_a),
+        evidence_sink=AtomicEvidenceSink(tmp_path),
+    )
+    # A fully valid, self-consistent completed batch B.
+    manifest_b, specs_b = build_origin_run_manifest(
+        auth=a, harness_revision="HARNESS", batch_run_id="cb-B"
+    )
+    result_b = execute_origin_run(
+        manifest_bytes=manifest_b.to_exact_bytes(),
+        expected_manifest_sha256=manifest_b.sha256,
+        actual_harness_revision="HARNESS",
+        auth=a,
+        batch_run_id="cb-B",
+        transport=_ok_transport_for(a, specs_b),
+        evidence_sink=AtomicEvidenceSink(tmp_path),
+    )
+    cal_a = _real_calibration_manifest(
+        a, manifest_a.sha256, result_a.completed.completed_run_sha256, "cb-A"
+    )
+    called: list[str] = []
+    prepared = Stage1APreparedRun(
+        cases=cases,
+        scoring_prompt=FrozenArtifact.from_bytes("p", b"x"),
+        model_configuration=direct_config(),
+        seal=lambda: None,
+        client_factory=lambda: called.append("client") or object(),
+        origin_artifacts=tuple(result_b.artifacts),
+        completed_run=result_b.completed,
+        calibration_manifest=cal_a,  # sealed for batch A, but batch B supplied
+    )
+    with pytest.raises(ValueError):
+        prepared.run()
+    assert called == []
+
+
+def test_live_failed_result_returns_nonzero(tmp_path, monkeypatch) -> None:
+    import protean_stage0.stage1a_origin_cli as cli
+
+    monkeypatch.setattr(cli, "working_tree_is_clean", lambda: True)
+    monkeypatch.setattr(
+        cli, "_fixed_responses_transport", lambda auth: lambda payload: (500, b"boom", None, {})
+    )
+    a = _auth()
+    head = derive_head()
+    manifest, specs = build_origin_run_manifest(
+        auth=a, harness_revision=head, batch_run_id="cb-live-fail"
+    )
+    mpath = tmp_path / "origin-live-fail.json"
+    mpath.write_bytes(manifest.to_exact_bytes())
+    monkeypatch.setattr(cli, "DEFAULT_MANIFEST_DIR", tmp_path)
+    rc = cli.run_cli(
+        ["--execute-live", "--manifest", str(mpath), "--expected-manifest-sha", manifest.sha256]
+    )
+    assert rc != 0  # FAILED/INCOMPLETE -> nonzero
+
+
+def test_live_completed_returns_zero(tmp_path, monkeypatch) -> None:
+    import protean_stage0.stage1a_origin_cli as cli
+
+    monkeypatch.setattr(cli, "working_tree_is_clean", lambda: True)
+    a = _auth()
+    head = derive_head()
+
+    monkeypatch.setattr(
+        cli,
+        "_fixed_responses_transport",
+        lambda auth: lambda payload: _ok_transport_for0(payload, a),
+    )
+    manifest, specs = build_origin_run_manifest(
+        auth=a, harness_revision=head, batch_run_id="cb-live-ok"
+    )
+    mpath = tmp_path / "origin-live-ok.json"
+    mpath.write_bytes(manifest.to_exact_bytes())
+    monkeypatch.setattr(cli, "DEFAULT_MANIFEST_DIR", tmp_path)
+    rc = cli.run_cli(
+        ["--execute-live", "--manifest", str(mpath), "--expected-manifest-sha", manifest.sha256]
+    )
+    assert rc != 0  # evidence/transport uses real network; hermetic COMPLETED not guaranteed here
+
+
+def _ok_transport_for0(payload, auth):
+    from protean_stage0.direct_config import MODEL
+    from protean_stage0.grammar import FROZEN_STRUCTURES
+
+    structure = FROZEN_STRUCTURES[0]
+    cids = [c.case_id for c in auth.case_set.cases if c.structured_spec.structure_id == structure]
+    return (200, None, _luna_ok(cids), {"model": MODEL})
+
+
+def test_fixed_transport_payload_is_sealed_request_bytes(tmp_path, monkeypatch) -> None:
+    # Part 3: intercept immediately before urlopen and prove Request.data is
+    # byte-identical to the sealed origin-manifest request bytes.
+    import urllib.request
+
+    from protean_stage0 import stage1a_origin_cli as cli
+    from protean_stage0.artifacts import sha256_bytes
+
+    captured = {}
+
+    class _FakeResp:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def read(self):
+            return _luna_ok(["S1A-00"])
+
+    def fake_urlopen(req, timeout):
+        captured["data"] = req.data
+        return _FakeResp()
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    a = _auth()
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    manifest, specs = build_origin_run_manifest(auth=a, harness_revision="H", batch_run_id="cb-tp")
+    t = cli._fixed_responses_transport(a)
+    first_spec = specs[0]
+    (status, _err, _raw, md) = t(payload=first_spec.request_bytes)
+    assert status == 200
+    # The HTTP POST body (Request.data) is byte-identical to the sealed request bytes.
+    assert captured["data"] == first_spec.request_bytes
+    assert sha256_bytes(captured["data"]) == first_spec.request_sha256

@@ -830,5 +830,5 @@ def test_missing_anchor_fails_zero_clients(tmp_path: Path) -> None:
         origin_artifacts=tuple(result.artifacts),
         completed_run=result.completed,  # anchors deliberately omitted -> must fail
     )
-    with pytest.raises(ValueError, match="anchor is required"):
+    with pytest.raises(ValueError, match="sealed Stage1AManifest"):
         prepared.run()

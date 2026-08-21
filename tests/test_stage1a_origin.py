@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import json
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -515,8 +516,11 @@ def test_preflight_ordering_seal_then_client_then_scoring() -> None:
         client_factory=factory,
         origin_artifacts=artifacts,
         completed_run=completed,
-        expected_origin_manifest_sha256=completed.manifest_sha256,
-        expected_completed_run_sha256=completed.completed_run_sha256,
+        calibration_manifest=SimpleNamespace(
+            origin_run_manifest_sha256=completed.manifest_sha256,
+            origin_completed_run_sha256=completed.completed_run_sha256,
+            origin_batch_run_id=completed.batch_run_id,
+        ),
     )
     prepared.run()
     assert constructed == ["client"]
