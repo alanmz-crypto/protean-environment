@@ -24,6 +24,7 @@ from .stage1a_config import (
     STAGE1A_POSITIVE,
     STAGE1A_TOTAL,
 )
+from .stage1a_origin import ORIGIN_PROMPT_SHA256, ORIGIN_RESPONSE_CONTRACT_SHA256
 
 
 @dataclass(frozen=True, slots=True)
@@ -37,6 +38,8 @@ class Stage1AManifest:
     origin_mechanism_version: str
     expected_origin_sessions: int
     origin_response_contract: str
+    origin_prompt_sha256: str
+    origin_response_contract_sha256: str
     case_set_sha256: str
     scoring_prompt_sha256: str
     parse_contract_sha256: str
@@ -74,6 +77,8 @@ class Stage1AManifest:
         origin_mechanism_version: str = "stage1a-real-origin-v1",
         origin_response_contract: str = "stage1a-origin-adoption-v1",
         expected_origin_sessions: int = 5,
+        origin_prompt_sha256: str = ORIGIN_PROMPT_SHA256,
+        origin_response_contract_sha256: str = ORIGIN_RESPONSE_CONTRACT_SHA256,
     ) -> Stage1AManifest:
         if len(case_set.cases) != STAGE1A_TOTAL:
             raise ValueError("Stage-1A manifest requires exactly 60 cases")
@@ -93,6 +98,8 @@ class Stage1AManifest:
             origin_mechanism_version=origin_mechanism_version,
             expected_origin_sessions=expected_origin_sessions,
             origin_response_contract=origin_response_contract,
+            origin_prompt_sha256=origin_prompt_sha256,
+            origin_response_contract_sha256=origin_response_contract_sha256,
             case_set_sha256=case_set.sha256,
             scoring_prompt_sha256=scoring_prompt.sha256,
             parse_contract_sha256=parse_contract_sha256,
@@ -133,6 +140,8 @@ class Stage1AManifest:
             "origin_mechanism_version": self.origin_mechanism_version,
             "expected_origin_sessions": self.expected_origin_sessions,
             "origin_response_contract": self.origin_response_contract,
+            "origin_prompt_sha256": self.origin_prompt_sha256,
+            "origin_response_contract_sha256": self.origin_response_contract_sha256,
             "case_set_sha256": self.case_set_sha256,
             "scoring_prompt_sha256": self.scoring_prompt_sha256,
             "parse_contract_sha256": self.parse_contract_sha256,
@@ -168,6 +177,8 @@ class Stage1AManifest:
             self.real_origin_amendment_version,
             self.origin_mechanism_version,
             self.origin_response_contract,
+            self.origin_prompt_sha256,
+            self.origin_response_contract_sha256,
             self.case_set_sha256,
             self.scoring_prompt_sha256,
             self.parse_contract_sha256,

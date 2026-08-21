@@ -94,15 +94,18 @@ class Stage1APreparedRun:
     origin_artifacts: tuple[Any, ...] = ()
 
     def run(self) -> list[SingleScoreCall]:
-        # 1) seal validation + real-origin coverage (raises on any mismatch; the
-        #    calibration scoring client is NOT constructed until 5/5 successful
-        #    real-origin artifacts cover all 60 cases)
+        # 1) seal validation + MANDATORY real-origin coverage. Raises on any
+        #    mismatch (including zero artifacts); the calibration scoring client is
+        #    never constructed until 5/5 successful real-origin artifacts cover all
+        #    60 cases, one per structure, with no case migrating between groups.
         self.seal()
-        if self.origin_artifacts:
-            require_real_origin_coverage(
-                self.origin_artifacts,
-                frozenset(c.generated.spec.case_id for c in self.cases),
-            )
+        require_real_origin_coverage(
+            self.origin_artifacts,
+            frozenset(c.generated.spec.case_id for c in self.cases),
+            case_to_structure={
+                c.generated.spec.case_id: c.generated.spec.structure_id for c in self.cases
+            },
+        )
         # 2) client construction (after a passing seal + origin coverage)
         client = self.client_factory()
         # 3) scoring (one decision call per case)
@@ -115,13 +118,18 @@ class Stage1APreparedRun:
         return loop.run()
 
 
-def require_real_origin_coverage(artifacts: tuple[Any, ...], all_case_ids: frozenset[str]) -> None:
-    """Require a sealed successful real origin artifact for every case.
+def require_real_origin_coverage(
+    artifacts: tuple[Any, ...],
+    all_case_ids: frozenset[str],
+    case_to_structure: Mapping[str, Any] | None = None,
+) -> None:
+    """Require a sealed successful real origin artifact for every case. MANDATORY.
 
-    Exactly 5 origin sessions (one per familiar structure), each covering 12
-    adopted cases, together covering all 60 case IDs exactly once. Fewer than 5
-    (or any malformed/partial artifact) raises so the calibration scoring client
-    is never constructed.
+    Exactly 5 origin sessions, one per familiar structure, each covering exactly
+    the 12 Stage-1A cases belonging to that structure. No case may migrate between
+    structure groups. All 60 case IDs covered exactly once. ``()`` (zero artifacts)
+    or any malformed/partial artifact raises, so the calibration scoring client is
+    never constructed.
     """
     from .grammar import FROZEN_STRUCTURES
 
@@ -130,17 +138,29 @@ def require_real_origin_coverage(artifacts: tuple[Any, ...], all_case_ids: froze
             f"Stage-1A requires exactly {len(FROZEN_STRUCTURES)} origin sessions, "
             f"got {len(artifacts)}"
         )
+    structures_seen: set[Any] = set()
     covered: dict[str, str] = {}
     for art in artifacts:
-        # Each artifact is an OriginSessionArtifact; validate its 12/12 adoption.
+        structure = getattr(art, "structure", None)
+        if structure in structures_seen:
+            raise ValueError(f"duplicate origin structure: {structure}")
+        structures_seen.add(structure)
         for cid in art.case_ids:
             if cid in covered:
                 raise ValueError(f"duplicate origin coverage for case {cid}")
             if cid not in all_case_ids:
                 raise ValueError(f"origin covers unknown case {cid}")
+            if (
+                case_to_structure is not None
+                and cid in case_to_structure
+                and case_to_structure[cid] is not structure
+            ):
+                raise ValueError(f"case {cid} migrated between structure groups")
             if not art.adoption.get(cid, False):
                 raise ValueError(f"non-adopted origin case {cid}")
             covered[cid] = art.origin_run_id
+    if set(structures_seen) != set(FROZEN_STRUCTURES):
+        raise ValueError("origin sessions must cover every frozen structure exactly once")
     missing = all_case_ids - set(covered)
     if missing:
         raise ValueError(

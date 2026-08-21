@@ -1,13 +1,20 @@
-"""Stage-1A real-origin artifacts and a deterministic adoption contract.
+"""Stage-1A real-origin artifacts, frozen origin prompt, and a real verifier.
 
 Repairs the cross-session MECHANICAL_GAP: a prospective commitment "originates"
 in an earlier model session only when an actual GPT-5.6 Luna xHigh session
 explicitly ADOPTS (never authors) each externally-frozen commitment as its own,
 before any later outcome/state information exists.
 
-This module records one origin session per familiar structure (5 total, 12
-commitments each => 60 coverage) and a strict, machine-checkable response
-contract proving Luna adopted all 12 listed commitments of that structure.
+One origin session per familiar structure (5 total, 12 commitments each => 60
+coverage). Each artifact records an ORDERED canonical mapping of case_id ->
+EXACT commitment bytes (the actual records presented), never merely an aggregate
+hash. A dedicated origin prompt is frozen, and a strict, machine-checkable
+adoption response contract is frozen. A real artifact can unlock calibration only
+after mechanical verification (structure, 12 IDs, commitment records, Luna
+config hash, re-derived request hash, preserved raw provider bytes + SHA,
+response reparse, all-12 adoption, and provider metadata model/status/reasoning
+when live evidence exists).
+
 No provider call is made here; execution requires separate authorization.
 """
 
@@ -20,17 +27,74 @@ from dataclasses import dataclass
 from typing import Any
 
 from .artifacts import canonical_json_bytes, sha256_bytes
-from .grammar import StructureId
+from .grammar import FROZEN_STRUCTURES, StructureId
 
-# Deterministic adoption-response contract. The origin response must, for every
-# listed case ID of a structure, affirm adoption. We accept a compact canonical
-# form: one JSON object mapping each case ID to exactly True, or an ordered list
-# of "ADOPT <case_id>" lines, one per case. No free prose is accepted.
+# ---- Frozen dedicated origin-adoption prompt (adopt, not rewrite) ----
+ORIGIN_PROMPT = (
+    b"You are GPT-5.6 Luna xHigh. Below you are supplied with a list of "
+    b"externally authored prospective commitments, each identified by a case_id. "
+    b"For EACH commitment, DO NOT rewrite, paraphrase, improve, or regenerate its "
+    b"wording. Explicitly adopt it as your OWN prospective commitment: confirm that "
+    b"you will treat that exact commitment text as a commitment you hold, to be "
+    b"judged later only against its stated trigger condition. You have no information "
+    b"about any outcome, truth label, calibration score, selected threshold, or future "
+    b"observed state. Respond with ONLY the frozen machine response: for each "
+    b'case_id, a line "ADOPT <case_id>", one per case, in the order given, and '
+    b"nothing else."
+)
+ORIGIN_PROMPT_SHA256 = sha256_bytes(ORIGIN_PROMPT)
+
+# ---- Frozen adoption response-contract specification ----
+ORIGIN_RESPONSE_CONTRACT_SPEC = (
+    b"origin-adoption-v1: exact ASCII lines 'ADOPT <case_id>' (uppercase, space), "
+    b"one per presented commitment, in the exact order presented, then an optional "
+    b"trailing LF. Exactly matching the presented case_id set; no extra or missing "
+    b"case_ids; no other content. A single 'ADOPT <case_id>' marks that commitment "
+    b"as adopted by the model."
+)
+ORIGIN_RESPONSE_CONTRACT_SHA256 = sha256_bytes(ORIGIN_RESPONSE_CONTRACT_SPEC)
+
 _ADOPT_LINE = re.compile(rb"^ADOPT ([A-Za-z0-9_-]+)$")
 
 
 class OriginResponseContractFailure(RuntimeError):
     """A malformed/incomplete/refusal origin response. STOP before calibration."""
+
+
+def canonical_commitment_records(
+    records: list[tuple[str, bytes]],
+) -> tuple[tuple[str, bytes], ...]:
+    """Canonicalize an ordered case_id -> exact-commitment-bytes mapping."""
+    ids = [rid for rid, _ in records]
+    if len(ids) != 12 or len(set(ids)) != 12:
+        raise OriginResponseContractFailure(
+            "origin session must cover exactly 12 distinct case IDs"
+        )
+    out: list[tuple[str, bytes]] = []
+    seen: set[str] = set()
+    for cid, cbytes in records:
+        if not cid or not cbytes:
+            raise OriginResponseContractFailure("empty case_id or commitment bytes")
+        if cid in seen:
+            raise OriginResponseContractFailure(f"duplicate case_id {cid}")
+        seen.add(cid)
+        out.append((cid, cbytes))
+    return tuple(out)
+
+
+def commitments_hash(records: tuple[tuple[str, bytes], ...]) -> str:
+    """SHA-256 over the ORDERED canonical case_id -> commitment-bytes mapping.
+
+    The hash is computed over a bytes-level canonical stream (case_id, length-
+    prefixed exact commitment bytes) so that exact binary commitment bytes are
+    preserved and hashed, never collapsed to text.
+    """
+    parts: list[bytes] = []
+    for cid, cb in records:
+        parts.append(cid.encode("utf-8"))
+        parts.append(len(cb).to_bytes(8, "big"))
+        parts.append(cb)
+    return sha256_bytes(b"\x00".join(parts))
 
 
 @dataclass(frozen=True, slots=True)
@@ -39,34 +103,39 @@ class OriginSessionArtifact:
 
     origin_run_id: str
     structure: StructureId
-    case_ids: tuple[str, ...]
-    commitment_bytes: bytes  # exact external commitment wording presented
+    commitment_records: tuple[tuple[str, bytes], ...]  # ordered case_id -> exact bytes
     commitment_sha256: str
     model_configuration_sha256: str
     request_sha256: str
     provider_response_sha256: str
-    adoption: Mapping[str, bool]  # case_id -> adopted (must be all True)
+    provider_response_bytes: bytes  # preserved raw provider bytes (verifier proves)
+    adoption: Mapping[str, bool]  # case_id -> adopted (verifier proves all True)
     timestamp: str
     provider_metadata: Mapping[str, Any]
 
     def __post_init__(self) -> None:
-        if len(self.case_ids) != 12:
-            raise ValueError("each origin session must cover exactly 12 cases")
-        if len(set(self.case_ids)) != 12:
-            raise ValueError("origin session case_ids must be unique")
-        if self.adoption.keys() != set(self.case_ids):
-            raise ValueError("adoption keys must exactly match the 12 case IDs")
-        if not all(self.adoption.values()):
-            raise ValueError("adoption must be true for all 12 commitments")
-        if self.commitment_sha256 != sha256_bytes(self.commitment_bytes):
-            raise ValueError("commitment bytes/hash mismatch")
+        if self.structure not in FROZEN_STRUCTURES:
+            raise ValueError(f"origin artifact declares unknown structure: {self.structure}")
+        expected = set(e for e, _ in self.commitment_records)
+        if set(self.adoption) != expected:
+            raise ValueError("adoption keys must match the presented case IDs exactly")
+        if self.commitment_sha256 != commitments_hash(self.commitment_records):
+            raise ValueError("commitment records/hash mismatch")
         if len(self.request_sha256) != 64 or len(self.provider_response_sha256) != 64:
             raise ValueError("origin request/response hashes must be SHA-256 hex")
+        if self.provider_response_sha256 != sha256_bytes(self.provider_response_bytes):
+            raise ValueError("provider-response bytes/SHA mismatch")
+
+    @property
+    def case_ids(self) -> tuple[str, ...]:
+        return tuple(e for e, _ in self.commitment_records)
 
     def canonical_record(self) -> dict[str, Any]:
         return {
             "adoption": {k: bool(v) for k, v in self.adoption.items()},
-            "case_ids": list(self.case_ids),
+            "commitment_records": [
+                [e, b.decode("utf-8", "replace")] for e, b in self.commitment_records
+            ],
             "commitment_sha256": self.commitment_sha256,
             "model_configuration_sha256": self.model_configuration_sha256,
             "origin_run_id": self.origin_run_id,
@@ -83,6 +152,32 @@ class OriginSessionArtifact:
     @property
     def sha256(self) -> str:
         return sha256_bytes(self.to_exact_bytes())
+
+
+def build_origin_request_bytes(
+    origin_prompt: bytes,
+    records: list[tuple[str, bytes]],
+) -> bytes:
+    """Exact request bytes for one origin session (ordered case_id -> commitment).
+
+    Embeds the SAME case IDs the response contract references, so the response
+    parse can be checked against exactly the presented set.
+    """
+    rec = canonical_commitment_records(records)
+    return canonical_json_bytes(
+        {
+            "input": [
+                {"role": "user", "content": origin_prompt.decode("utf-8")},
+                {
+                    "role": "user",
+                    "content": json.dumps(
+                        {"commitments": [[cid, cb.decode("utf-8")] for cid, cb in rec]}
+                    ),
+                },
+            ],
+            "max_output_tokens": 64,
+        }
+    )
 
 
 def _parse_adoptions(raw: bytes, case_ids: tuple[str, ...]) -> Mapping[str, bool]:
@@ -128,18 +223,57 @@ def _parse_adoptions(raw: bytes, case_ids: tuple[str, ...]) -> Mapping[str, bool
     return adoption2
 
 
-def build_origin_request_bytes(
-    scoring_prompt: bytes,
-    case_payloads: list[Mapping[str, str]],
-) -> bytes:
-    """Exact request bytes for one origin session (12 commitments; no truth/state)."""
-    records = [("COMMITMENT", p.get("commitment", "")) for p in case_payloads]
-    return canonical_json_bytes(
-        {"prompt": scoring_prompt.decode("utf-8", "replace"), "commitments": records}
+def verify_origin_artifact(
+    artifact: OriginSessionArtifact,
+    *,
+    origin_prompt: bytes,
+    expected_structure: StructureId,
+    expected_case_ids: tuple[str, ...],
+    authoritative_luna_config_sha256: str,
+    expected_provider_model: str | None = None,
+    expected_provider_status: str | None = None,
+) -> None:
+    """Mechanical real-origin verifier. Raises unless every proof holds.
+
+    A manually populated adoption dict alone never constitutes proof; the verifier
+    re-checks structure, the exact 12 case IDs, exact commitment records, the Luna
+    config hash, the re-derived request SHA, preserved provider bytes + SHA,
+    whether the provider response reparses under the frozen contract, and that all
+    12 commitments are adopted (recomputed from the re-parsed response, not from
+    the artifact's populated booleans). When live provider metadata is supplied,
+    it also asserts the expected model/status.
+    """
+    if artifact.structure is not expected_structure:
+        raise OriginResponseContractFailure("origin artifact declares the wrong structure")
+    if artifact.case_ids != expected_case_ids:
+        raise OriginResponseContractFailure("origin artifact case IDs differ from expected")
+    if artifact.commitment_sha256 != commitments_hash(artifact.commitment_records):
+        raise OriginResponseContractFailure("commitment records/hash mismatch")
+    if artifact.model_configuration_sha256 != authoritative_luna_config_sha256:
+        raise OriginResponseContractFailure("origin model configuration != Luna config")
+    expected_request_sha = sha256_bytes(
+        build_origin_request_bytes(origin_prompt, list(artifact.commitment_records))
     )
-
-
-def verify_origin_precondition(case_ids: list[str]) -> None:
-    expected = set(case_ids)
-    if len(case_ids) != 12 or len(expected) != 12:
-        raise OriginResponseContractFailure("origin session must cover exactly 12 distinct cases")
+    if artifact.request_sha256 != expected_request_sha:
+        raise OriginResponseContractFailure(
+            "origin request SHA does not match the re-derived origin request"
+        )
+    if artifact.provider_response_sha256 != sha256_bytes(artifact.provider_response_bytes):
+        raise OriginResponseContractFailure("provider-response bytes/SHA mismatch")
+    # Reparse the provider response under the frozen contract; this is the proof,
+    # not the artifact's stored adoption booleans.
+    parsed = _parse_adoptions(artifact.provider_response_bytes, artifact.case_ids)
+    if set(parsed) != set(expected_case_ids) or not all(parsed.values()):
+        raise OriginResponseContractFailure(
+            "provider response did not adopt all expected commitments"
+        )
+    if expected_provider_model is not None:
+        returned = artifact.provider_metadata.get("model") or artifact.provider_metadata.get(
+            "returned_model"
+        )
+        if returned and returned != expected_provider_model:
+            raise OriginResponseContractFailure("provider model does not match expected")
+    if expected_provider_status is not None:
+        status = artifact.provider_metadata.get("status")
+        if status and status != expected_provider_status:
+            raise OriginResponseContractFailure("provider status does not match expected")

@@ -54,7 +54,22 @@ The model's role is **adoption, not authorship**. Luna confirms each listed
 commitment as its own for the later prospective-trigger judgment; it does not
 produce or alter commitment wording.
 
-## 6. Freeze statement
+## 6. Origin execution discipline (frozen)
+
+- exactly **5 independent origin requests** (one per familiar structure);
+- each request issues **GPT-5.6 Luna xHigh directly through the Responses API**;
+- **zero retries**;
+- **all 5 must complete successfully** before any of the 60 calibration scoring
+  calls may begin;
+- **malformed / incomplete / refusal / non-adoption of any commitment → STOP**
+  before calibration scoring;
+- **no partial salvage**;
+- a **dedicated origin-adoption prompt** and the **adoption response contract**
+  are **frozen before origin execution**;
+- origin calls are **establishment/provenance calls only** and never enter
+  threshold calibration, scoring, or analysis.
+
+## 7. Freeze statement
 
 FROZEN Protocol v1.0 is not altered in place by this document. If ratified, this
 amendment becomes a separately documented protocol revision governing the
