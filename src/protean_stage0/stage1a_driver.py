@@ -97,21 +97,21 @@ class Stage1APreparedRun:
     completed_run: Any = (
         None  # CompletedOriginRun (required; 5 standalone artifacts are NOT enough)
     )
-    calibration_manifest: Any = None  # sealed Stage1AManifest (authoritative origin SHAs/batch)
     # DEPRECATED / free-disabled: no longer the calibration authority; the sealed
     # Stage1AManifest is authoritative. Retained only for API compatibility.
     expected_origin_manifest_sha256: str | None = None
     expected_completed_run_sha256: str | None = None
 
     def run(self) -> list[SingleScoreCall]:
-        # 1) seal validation + MANDATORY real-origin coverage. Structure/coverage
-        #    alone is insufficient: every artifact must ALSO pass the full real
-        #    origin verifier (exact structure, 12 IDs, commitment records, exact
-        #    request SHA, preserved raw provider bytes + SHA, strict Responses-JSON
-        #    reparse, final-output match, and the EXACT origin-adoption-v1 contract).
-        #    Any failure (including zero artifacts) raises BEFORE the calibration
-        #    scoring client is constructed.
-        self.seal()
+        # 1) seal validation: self.seal() MUST return the exact validated
+        #    Stage1AManifest. This makes the calibration seal and the authority
+        #    structurally identical: there is no separately-supplied calibration
+        #    manifest that could differ from the one validated. Any mismatch
+        #    (including zero artifacts) raises BEFORE the calibration scoring client
+        #    is constructed.
+        sealed_manifest = self.seal()
+        if sealed_manifest is None:
+            raise ValueError("seal() did not return the exact validated Stage1AManifest")
         require_real_origin_coverage(
             self.origin_artifacts,
             frozenset(c.generated.spec.case_id for c in self.cases),
@@ -174,14 +174,15 @@ class Stage1APreparedRun:
                 raise ValueError("origin artifact SHA does not match completed-run authority")
         # 1c) Anchor calibration to the SEALED Stage1AManifest authority. The expected
         #     origin-manifest SHA, completed-run SHA, and batch ID are derived from the
-        #     manifest's immutable origin fields, NOT from the supplied CompletedOriginRun
-        #     (a self-consistent fabricated completed run cannot authorize itself).
-        if self.calibration_manifest is None:
-            raise ValueError("calibration requires a sealed Stage1AManifest")
-        cm = self.calibration_manifest
-        exp_origin_sha = getattr(cm, "origin_run_manifest_sha256", "")
-        exp_completed_sha = getattr(cm, "origin_completed_run_sha256", "")
-        exp_batch = getattr(cm, "origin_batch_run_id", "")
+        #     exact manifest returned by seal() (i.e. the very object passed through
+        #     validate_stage1a_manifest_seal), NOT from the supplied CompletedOriginRun
+        #     (a self-consistent fabricated completed run cannot authorize itself). There
+        #     is no separately-supplied calibration manifest that could differ from the
+        #     one validated, so seal() can never validate manifest A while the run reads
+        #     manifest B.
+        exp_origin_sha = getattr(sealed_manifest, "origin_run_manifest_sha256", "")
+        exp_completed_sha = getattr(sealed_manifest, "origin_completed_run_sha256", "")
+        exp_batch = getattr(sealed_manifest, "origin_batch_run_id", "")
         if not exp_origin_sha or not exp_completed_sha or not exp_batch:
             raise ValueError("sealed Stage1AManifest is missing origin authority fields")
         if completed.manifest_sha256 != exp_origin_sha:

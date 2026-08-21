@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -327,7 +328,11 @@ def test_stage1a_prepared_run_requires_completed_batch() -> None:
         cases=cases,
         scoring_prompt=FrozenArtifact.from_bytes("p", b"x"),
         model_configuration=direct_model_configuration(),
-        seal=lambda: None,
+        seal=lambda: SimpleNamespace(
+            origin_run_manifest_sha256="0" * 64,
+            origin_completed_run_sha256="0" * 64,
+            origin_batch_run_id="batch",
+        ),
         client_factory=factory,
         origin_artifacts=(),
     )
@@ -423,7 +428,19 @@ def _prepared_with(auth: Any, artifacts: list[Any], completed: Any) -> tuple[Any
         cases=cases,
         scoring_prompt=FrozenArtifact.from_bytes("p", b"x"),
         model_configuration=direct_model_configuration(),
-        seal=lambda: None,
+        seal=lambda: (
+            SimpleNamespace(
+                origin_run_manifest_sha256=completed.manifest_sha256,
+                origin_completed_run_sha256=completed.completed_run_sha256,
+                origin_batch_run_id=completed.batch_run_id,
+            )
+            if completed
+            else SimpleNamespace(
+                origin_run_manifest_sha256="0" * 64,
+                origin_completed_run_sha256="0" * 64,
+                origin_batch_run_id="batch",
+            )
+        ),
         client_factory=factory,
         origin_artifacts=tuple(artifacts),
         completed_run=completed,
@@ -450,7 +467,11 @@ def test_calibration_requires_completed_batch(tmp_path: Path) -> None:
         cases=cases,
         scoring_prompt=FrozenArtifact.from_bytes("p", b"x"),
         model_configuration=direct_model_configuration(),
-        seal=lambda: None,
+        seal=lambda: SimpleNamespace(
+            origin_run_manifest_sha256="0" * 64,
+            origin_completed_run_sha256="0" * 64,
+            origin_batch_run_id="batch",
+        ),
         client_factory=lambda: (_ for _ in ()).throw(AssertionError("must not construct")),
         origin_artifacts=result.artifacts,
         completed_run=None,  # no completed authority
@@ -825,10 +846,14 @@ def test_missing_anchor_fails_zero_clients(tmp_path: Path) -> None:
         cases=cases,
         scoring_prompt=FrozenArtifact.from_bytes("p", b"x"),
         model_configuration=direct_model_configuration(),
-        seal=lambda: None,
+        seal=lambda: SimpleNamespace(
+            origin_run_manifest_sha256="",
+            origin_completed_run_sha256="",
+            origin_batch_run_id="",
+        ),
         client_factory=factory,
         origin_artifacts=tuple(result.artifacts),
-        completed_run=result.completed,  # anchors deliberately omitted -> must fail
+        completed_run=result.completed,  # seal manifest lacks origin fields -> must fail
     )
     with pytest.raises(ValueError, match="sealed Stage1AManifest"):
         prepared.run()

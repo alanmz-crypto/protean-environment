@@ -78,6 +78,19 @@ def _dummy_config() -> Any:
     )
 
 
+def _seal_manifest(
+    origin_sha: str = "0" * 64, completed_sha: str = "0" * 64, batch: str = "shared-batch-1"
+) -> Any:
+    """A seal() callable returning a valid stand-in Stage1AManifest. Used by tests
+    whose intended failure happens at a LATER stage than the seal (coverage/artifacts),
+    so the seal must pass first."""
+    return lambda: SimpleNamespace(
+        origin_run_manifest_sha256=origin_sha,
+        origin_completed_run_sha256=completed_sha,
+        origin_batch_run_id=batch,
+    )
+
+
 def _records_for(cases: list[Any]) -> list[tuple[str, bytes]]:
     return [(c.generated.spec.case_id, c.textualized.commitment.encode()) for c in cases]
 
@@ -181,7 +194,7 @@ def test_origin_mandatory_zero_artifacts_no_client_no_calls() -> None:
         cases=cases,
         scoring_prompt=_dummy_prompt(),
         model_configuration=_dummy_config(),
-        seal=lambda: None,
+        seal=_seal_manifest(),
         client_factory=factory,
         origin_artifacts=(),  # zero artifacts -> MUST fail before client
     )
@@ -213,7 +226,7 @@ def test_correct_structure_ids_adoption_but_invalid_wire_evidence_blocks() -> No
             cases=cases,
             scoring_prompt=_dummy_prompt(),
             model_configuration=_dummy_config(),
-            seal=lambda: None,
+            seal=_seal_manifest(),
             client_factory=factory,
             origin_artifacts=(bad_art,),
         )
@@ -408,7 +421,7 @@ def test_altered_commitment_text_fails_pre_client() -> None:
         cases=cases,
         scoring_prompt=_dummy_prompt(),
         model_configuration=_dummy_config(),
-        seal=lambda: None,
+        seal=_seal_manifest(),
         client_factory=factory,
         origin_artifacts=tuple(artifacts),
     )
@@ -471,7 +484,7 @@ def test_fewer_than_5_never_construct_scoring_client() -> None:
         cases=cases,
         scoring_prompt=_dummy_prompt(),
         model_configuration=_dummy_config(),
-        seal=lambda: None,
+        seal=_seal_manifest(),
         client_factory=factory,
         origin_artifacts=_all_origins(cases)[:4],
     )
@@ -512,15 +525,14 @@ def test_preflight_ordering_seal_then_client_then_scoring() -> None:
         cases=cases,
         scoring_prompt=FrozenArtifact.from_bytes("p", b"x"),
         model_configuration=_dummy_config(),
-        seal=lambda: None,
-        client_factory=factory,
-        origin_artifacts=artifacts,
-        completed_run=completed,
-        calibration_manifest=SimpleNamespace(
+        seal=lambda: SimpleNamespace(
             origin_run_manifest_sha256=completed.manifest_sha256,
             origin_completed_run_sha256=completed.completed_run_sha256,
             origin_batch_run_id=completed.batch_run_id,
         ),
+        client_factory=factory,
+        origin_artifacts=artifacts,
+        completed_run=completed,
     )
     prepared.run()
     assert constructed == ["client"]

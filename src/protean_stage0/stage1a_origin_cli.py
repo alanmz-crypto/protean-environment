@@ -178,7 +178,13 @@ def run_cli(argv: list[str] | None = None) -> int:
             if spec.request_sha256 != manifest.per_request_request_sha.get(spec.structure):
                 print(f"STOP: rederived request SHA mismatch for {spec.structure}")
                 return 2
-        os.environ.setdefault("OPENAI_API_KEY", os.environ.get("OPENAI_API_KEY", ""))
+        # Preflight a non-empty OPENAI_API_KEY BEFORE any transport construction or
+        # batch start: a missing key must abort with zero HTTP attempts, no .started
+        # batch marker, and no evidence/artifact files. The transport's own key check
+        # remains as defense-in-depth.
+        if not os.environ.get("OPENAI_API_KEY", ""):
+            print("STOP: OPENAI_API_KEY is not set (no HTTP attempts, no batch started)")
+            return 2
         transport = _fixed_responses_transport(auth)
         sink = AtomicEvidenceSink(Path(args.out_dir))
         result = execute_origin_run(

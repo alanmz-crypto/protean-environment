@@ -225,20 +225,16 @@ def _ok_transport_for(auth: Any, specs: Any) -> Any:
 def _prepared(
     auth: Any, cases: Any, artifacts: Any, completed: Any, origin_sha: str, completed_sha: str
 ) -> tuple[Any, list[Any]]:
-    from dataclasses import dataclass
+    from types import SimpleNamespace
 
     from protean_stage0.artifacts import FrozenArtifact
     from protean_stage0.stage1a_driver import Stage1APreparedRun
 
     called: list[str] = []
 
-    @dataclass(frozen=True, slots=True)
-    class _CalManifest:
-        origin_run_manifest_sha256: str
-        origin_completed_run_sha256: str
-        origin_batch_run_id: str
-
-    cm = _CalManifest(
+    # seal() returns the exact manifest consumed downstream: a stand-in object
+    # carrying the immutable origin authority fields.
+    cm = SimpleNamespace(
         origin_run_manifest_sha256=origin_sha,
         origin_completed_run_sha256=completed_sha,
         origin_batch_run_id=completed.batch_run_id if completed else "",
@@ -247,11 +243,10 @@ def _prepared(
         cases=cases,
         scoring_prompt=FrozenArtifact.from_bytes("p", b"x"),
         model_configuration=direct_config(),
-        seal=lambda: None,
+        seal=lambda: cm,
         client_factory=lambda: called.append("client") or object(),
         origin_artifacts=tuple(artifacts),
         completed_run=completed,
-        calibration_manifest=cm,
     )
     return prepared, called
 
@@ -443,6 +438,53 @@ def _real_calibration_manifest(auth, origin_sha, completed_sha, batch):
     )
 
 
+def _real_seal(manifest: Any) -> Any:
+    """Build a seal() callable that runs the REAL validate_stage1a_manifest_seal on the
+    given (authoring) Stage1AManifest and returns exactly that manifest. This makes the
+    positive path invoke the actual validation code for the exact object later consumed."""
+    from protean_stage0.artifacts import FrozenArtifact
+    from protean_stage0.stage1a_cases import build_stage1a_cases, freeze_stage1a_case_set
+    from protean_stage0.stage1a_manifest import validate_stage1a_manifest_seal
+    from protean_stage0.textualize import TemplateBank
+
+    cases = build_stage1a_cases(
+        template_bank=TemplateBank.from_bytes((REPO / "stage0/template-bank-v1.json").read_bytes())
+    )
+    case_set = freeze_stage1a_case_set(cases)
+    protocol = FrozenArtifact.from_bytes(
+        "p", (REPO / "docs/PROTOCOL-prospective-control-v1.0.md").read_bytes()
+    )
+    futility = FrozenArtifact.from_bytes(
+        "f",
+        (REPO / "docs/RATIFIED-AMENDMENT-stage1-futility-shared-score-v1.0.1-r1.md").read_bytes(),
+    )
+    real = FrozenArtifact.from_bytes(
+        "r", (REPO / "docs/RATIFIED-AMENDMENT-stage1a-real-origin-v1.0.2-r1.md").read_bytes()
+    )
+    prompt = FrozenArtifact.from_bytes(
+        "s", (REPO / "stage0/candidate-scoring-prompt-v1.txt").read_bytes()
+    )
+
+    def seal() -> Any:
+        validate_stage1a_manifest_seal(
+            manifest,
+            actual_harness_revision=manifest.harness_revision,
+            protocol=protocol,
+            futility_amendment=futility,
+            real_origin_amendment=real,
+            case_set=case_set,
+            scoring_prompt=prompt,
+            parse_contract_sha256=manifest.parse_contract_sha256,
+            model_configuration=direct_config(),
+            expected_origin_run_manifest_sha256=manifest.origin_run_manifest_sha256,
+            expected_origin_completed_run_sha256=manifest.origin_completed_run_sha256,
+            expected_origin_batch_run_id=manifest.origin_batch_run_id,
+        )
+        return manifest
+
+    return seal
+
+
 def test_authority_join_real_manifest_positive(tmp_path) -> None:
     # Positive: a REAL sealed Stage1AManifest authority (not self-consistent SHAs)
     # plus a matching completed origin batch pass preflight and reach client construction.
@@ -476,11 +518,10 @@ def test_authority_join_real_manifest_positive(tmp_path) -> None:
         cases=cases,
         scoring_prompt=FrozenArtifact.from_bytes("p", b"x"),
         model_configuration=direct_config(),
-        seal=lambda: None,
+        seal=_real_seal(cal),
         client_factory=lambda: called.append("client") or object(),
         origin_artifacts=tuple(result.artifacts),
         completed_run=result.completed,
-        calibration_manifest=cal,
     )
     with pytest.raises(AttributeError):  # target client is object() -> scoring fails later
         prepared.run()
@@ -533,11 +574,13 @@ def test_authority_join_cross_batch_rejected(tmp_path) -> None:
         cases=cases,
         scoring_prompt=FrozenArtifact.from_bytes("p", b"x"),
         model_configuration=direct_config(),
-        seal=lambda: None,
+        # seal() validates manifest A (batch A) and returns it exactly; but the run
+        # is supplied a fully valid, self-consistent completed batch B. Manifest A
+        # cannot authorize batch B: rejected before client construction.
+        seal=_real_seal(cal_a),
         client_factory=lambda: called.append("client") or object(),
         origin_artifacts=tuple(result_b.artifacts),
         completed_run=result_b.completed,
-        calibration_manifest=cal_a,  # sealed for batch A, but batch B supplied
     )
     with pytest.raises(ValueError):
         prepared.run()
@@ -551,6 +594,7 @@ def test_live_failed_result_returns_nonzero(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(
         cli, "_fixed_responses_transport", lambda auth: lambda payload: (500, b"boom", None, {})
     )
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")  # pass the key preflight -> reach transport
     a = _auth()
     head = derive_head()
     manifest, specs = build_origin_run_manifest(
@@ -569,6 +613,7 @@ def test_live_completed_returns_zero(tmp_path, monkeypatch) -> None:
     import protean_stage0.stage1a_origin_cli as cli
 
     monkeypatch.setattr(cli, "working_tree_is_clean", lambda: True)
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")  # pass the key preflight -> reach transport
     a = _auth()
     head = derive_head()
 
@@ -587,6 +632,49 @@ def test_live_completed_returns_zero(tmp_path, monkeypatch) -> None:
         ["--execute-live", "--manifest", str(mpath), "--expected-manifest-sha", manifest.sha256]
     )
     assert rc != 0  # evidence/transport uses real network; hermetic COMPLETED not guaranteed here
+
+
+def test_live_missing_api_key_no_transport_no_marker(tmp_path, monkeypatch) -> None:
+    # Negative: a missing OPENAI_API_KEY must abort BEFORE any transport construction
+    # or batch start. Zero HTTP attempts, no .started marker, no evidence/artifact
+    # files, and the reviewed batch stays unconsumed.
+    import protean_stage0.stage1a_origin_cli as cli
+
+    calls: list[str] = []
+    monkeypatch.setattr(cli, "working_tree_is_clean", lambda: True)
+    monkeypatch.setattr(
+        cli,
+        "_fixed_responses_transport",
+        lambda auth: calls.append("transport") or (lambda payload: None),
+    )
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)  # guarantee absent
+    monkeypatch.setattr(cli, "DEFAULT_MANIFEST_DIR", tmp_path)
+    a = _auth()
+    head = derive_head()
+    manifest, specs = build_origin_run_manifest(
+        auth=a, harness_revision=head, batch_run_id="cb-live-nokey"
+    )
+    mpath = tmp_path / "origin-live-nokey.json"
+    mpath.write_bytes(manifest.to_exact_bytes())
+    out = tmp_path / "out"
+    rc = cli.run_cli(
+        [
+            "--execute-live",
+            "--manifest",
+            str(mpath),
+            "--expected-manifest-sha",
+            manifest.sha256,
+            "--out-dir",
+            str(out),
+        ]
+    )
+    assert rc != 0  # nonzero on missing key
+    assert calls == []  # zero transport constructions / zero HTTP attempts
+    assert not list(out.glob("*.started"))  # no started batch marker
+    assert not list(out.glob("origin-evidence-*.json"))  # no evidence files
+    assert not list(out.glob("origin-artifact-*.json"))  # no artifact files
+    # The reviewed batch stays unconsumed: no durable record of it was written.
+    assert not list(out.glob("origin-completed-*.json"))
 
 
 def _ok_transport_for0(payload, auth):
