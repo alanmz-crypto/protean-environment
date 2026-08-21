@@ -16,8 +16,10 @@ from dataclasses import dataclass
 from typing import Any
 
 from .artifacts import FrozenArtifact
+from .grammar import FROZEN_STRUCTURES, StructureId
 from .harness import ModelClient, ModelRequest
 from .manifest import ModelConfiguration
+from .stage1a_origin import ORIGIN_PROMPT, verify_origin_artifact
 
 
 @dataclass(frozen=True, slots=True)
@@ -94,10 +96,13 @@ class Stage1APreparedRun:
     origin_artifacts: tuple[Any, ...] = ()
 
     def run(self) -> list[SingleScoreCall]:
-        # 1) seal validation + MANDATORY real-origin coverage. Raises on any
-        #    mismatch (including zero artifacts); the calibration scoring client is
-        #    never constructed until 5/5 successful real-origin artifacts cover all
-        #    60 cases, one per structure, with no case migrating between groups.
+        # 1) seal validation + MANDATORY real-origin coverage. Structure/coverage
+        #    alone is insufficient: every artifact must ALSO pass the full real
+        #    origin verifier (exact structure, 12 IDs, commitment records, exact
+        #    request SHA, preserved raw provider bytes + SHA, strict Responses-JSON
+        #    reparse, final-output match, and the EXACT origin-adoption-v1 contract).
+        #    Any failure (including zero artifacts) raises BEFORE the calibration
+        #    scoring client is constructed.
         self.seal()
         require_real_origin_coverage(
             self.origin_artifacts,
@@ -106,7 +111,22 @@ class Stage1APreparedRun:
                 c.generated.spec.case_id: c.generated.spec.structure_id for c in self.cases
             },
         )
-        # 2) client construction (after a passing seal + origin coverage)
+        expected_ids_by_structure: dict[StructureId, list[str]] = {
+            structure: [] for structure in FROZEN_STRUCTURES
+        }
+        for c in self.cases:
+            expected_ids_by_structure[c.generated.spec.structure_id].append(
+                c.generated.spec.case_id
+            )
+        for art in self.origin_artifacts:
+            expected_ids = tuple(expected_ids_by_structure[art.structure])
+            verify_origin_artifact(
+                art,
+                origin_prompt=ORIGIN_PROMPT,
+                expected_structure=art.structure,
+                expected_case_ids=expected_ids,
+            )
+        # 2) client construction (after passing seal + origin coverage + verifier)
         client = self.client_factory()
         # 3) scoring (one decision call per case)
         loop = Stage1AScoringLoop(
@@ -129,7 +149,8 @@ def require_real_origin_coverage(
     the 12 Stage-1A cases belonging to that structure. No case may migrate between
     structure groups. All 60 case IDs covered exactly once. ``()`` (zero artifacts)
     or any malformed/partial artifact raises, so the calibration scoring client is
-    never constructed.
+    never constructed. Note: adoption correctness is proven separately by
+    verify_origin_artifact (this gate checks coverage/migration only).
     """
     from .grammar import FROZEN_STRUCTURES
 
@@ -156,8 +177,6 @@ def require_real_origin_coverage(
                 and case_to_structure[cid] is not structure
             ):
                 raise ValueError(f"case {cid} migrated between structure groups")
-            if not art.adoption.get(cid, False):
-                raise ValueError(f"non-adopted origin case {cid}")
             covered[cid] = art.origin_run_id
     if set(structures_seen) != set(FROZEN_STRUCTURES):
         raise ValueError("origin sessions must cover every frozen structure exactly once")

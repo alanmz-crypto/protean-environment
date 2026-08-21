@@ -14,6 +14,7 @@ from types import MappingProxyType
 from typing import Any
 
 from .artifacts import FrozenArtifact, FrozenCaseSet, canonical_json_bytes, sha256_bytes
+from .direct_config import DIRECT_CONFIG_HASH
 from .manifest import ModelConfiguration
 from .schema import EvaluatorProvenance
 from .stage1a_config import (
@@ -24,7 +25,11 @@ from .stage1a_config import (
     STAGE1A_POSITIVE,
     STAGE1A_TOTAL,
 )
-from .stage1a_origin import ORIGIN_PROMPT_SHA256, ORIGIN_RESPONSE_CONTRACT_SHA256
+from .stage1a_origin import (
+    ORIGIN_PROMPT_SHA256,
+    ORIGIN_RESPONSE_CONTRACT_SHA256,
+    ORIGIN_RESPONSE_CONTRACT_VERSION,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -75,7 +80,7 @@ class Stage1AManifest:
         timestamp: str,
         run_id: str,
         origin_mechanism_version: str = "stage1a-real-origin-v1",
-        origin_response_contract: str = "stage1a-origin-adoption-v1",
+        origin_response_contract: str = ORIGIN_RESPONSE_CONTRACT_VERSION,
         expected_origin_sessions: int = 5,
         origin_prompt_sha256: str = ORIGIN_PROMPT_SHA256,
         origin_response_contract_sha256: str = ORIGIN_RESPONSE_CONTRACT_SHA256,
@@ -210,6 +215,8 @@ def validate_stage1a_manifest_seal(
     model_configuration: ModelConfiguration,
     cross_session_rep_version: str = CROSS_SESSION_REP_VERSION,
     expected_origin_sessions: int = 5,
+    origin_mechanism_version: str = "stage1a-real-origin-v1",
+    origin_response_contract_version: str = ORIGIN_RESPONSE_CONTRACT_VERSION,
 ) -> None:
     """Fail closed (raise) before any provider call on any Stage-1A mismatch.
 
@@ -227,9 +234,10 @@ def validate_stage1a_manifest_seal(
         "case set": (manifest.case_set_sha256, case_set.sha256),
         "scoring prompt": (manifest.scoring_prompt_sha256, scoring_prompt.sha256),
         "parse contract": (manifest.parse_contract_sha256, parse_contract_sha256),
-        "model configuration": (
-            manifest.model_configuration_sha256,
-            model_configuration.sha256,
+        "origin prompt": (manifest.origin_prompt_sha256, ORIGIN_PROMPT_SHA256),
+        "origin response contract": (
+            manifest.origin_response_contract_sha256,
+            ORIGIN_RESPONSE_CONTRACT_SHA256,
         ),
     }
     for name, (recorded, actual) in checks.items():
@@ -241,4 +249,11 @@ def validate_stage1a_manifest_seal(
         raise ValueError("Stage-1A seal mismatch: cross-session representation version")
     if manifest.expected_origin_sessions != expected_origin_sessions:
         raise ValueError("Stage-1A seal mismatch: expected origin sessions")
+    if manifest.origin_mechanism_version != origin_mechanism_version:
+        raise ValueError("Stage-1A seal mismatch: origin mechanism version")
+    if manifest.origin_response_contract != origin_response_contract_version:
+        raise ValueError("Stage-1A seal mismatch: origin response-contract version")
+    # Authoritative Luna configuration must be the frozen direct Responses config.
+    if model_configuration.sha256 != DIRECT_CONFIG_HASH:
+        raise ValueError("Stage-1A seal mismatch: model configuration != authoritative Luna config")
     manifest.validate_completeness()

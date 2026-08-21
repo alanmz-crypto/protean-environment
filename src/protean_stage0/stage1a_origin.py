@@ -1,25 +1,26 @@
-"""Stage-1A real-origin artifacts, frozen origin prompt, and a real verifier.
+"""Stage-1A real-origin artifacts, exact adoption contract, and wire verification.
 
-Repairs the cross-session MECHANICAL_GAP: a prospective commitment "originates"
-in an earlier model session only when an actual GPT-5.6 Luna xHigh session
-explicitly ADOPTS (never authors) each externally-frozen commitment as its own,
-before any later outcome/state information exists.
+Repairs the cross-session MECHANICAL_GAP: a commitment "originates" in an earlier
+model session only when an actual GPT-5.6 Luna xHigh session explicitly ADOPTS
+(never authors) each externally-frozen commitment as its own, before any later
+outcome/state information exists.
 
-One origin session per familiar structure (5 total, 12 commitments each => 60
-coverage). Each artifact records an ORDERED canonical mapping of case_id ->
-EXACT commitment bytes (the actual records presented), never merely an aggregate
-hash. A dedicated origin prompt is frozen, and a strict, machine-checkable
-adoption response contract is frozen. A real artifact can unlock calibration only
-after mechanical verification (structure, 12 IDs, commitment records, Luna
-config hash, re-derived request hash, preserved raw provider bytes + SHA,
-response reparse, all-12 adoption, and provider metadata model/status/reasoning
-when live evidence exists).
+One origin session per familiar structure (5 total, 12 commitments each => 60).
+Each artifact records an ORDERED canonical case_id -> EXACT commitment-bytes
+mapping and holds REAL Responses-API wire evidence: the exact transmitted
+request bytes, the complete raw provider JSON response bytes, and the extracted
+final ADOPT-line output. The raw response is parsed through the SAME strict
+Responses-object contract used by the direct Luna adapter (completed, response
+object, exact model, reasoning context, errors/incomplete rejected), then the
+exact origin-adoption-v1 contract is applied to the final output. A real artifact
+unlocks calibration only after verify_origin_artifact() passes every check.
 
-No provider call is made here; execution requires separate authorization.
+No provider call is made here; execution uses a fake transport in tests.
 """
 
 from __future__ import annotations
 
+import base64
 import json
 import re
 from collections.abc import Mapping
@@ -27,6 +28,8 @@ from dataclasses import dataclass
 from typing import Any
 
 from .artifacts import canonical_json_bytes, sha256_bytes
+from .direct_config import DIRECT_CONFIG_HASH, MODEL
+from .direct_responses import build_request_body, parse_scoring_response
 from .grammar import FROZEN_STRUCTURES, StructureId
 
 # ---- Frozen dedicated origin-adoption prompt (adopt, not rewrite) ----
@@ -44,13 +47,15 @@ ORIGIN_PROMPT = (
 )
 ORIGIN_PROMPT_SHA256 = sha256_bytes(ORIGIN_PROMPT)
 
-# ---- Frozen adoption response-contract specification ----
+# ---- Frozen origin-adoption response contract (EXACT) ----
+ORIGIN_RESPONSE_CONTRACT_VERSION = "origin-adoption-v1"
 ORIGIN_RESPONSE_CONTRACT_SPEC = (
-    b"origin-adoption-v1: exact ASCII lines 'ADOPT <case_id>' (uppercase, space), "
-    b"one per presented commitment, in the exact order presented, then an optional "
-    b"trailing LF. Exactly matching the presented case_id set; no extra or missing "
-    b"case_ids; no other content. A single 'ADOPT <case_id>' marks that commitment "
-    b"as adopted by the model."
+    b"origin-adoption-v1 EXACT: the final assistant output must be exactly the "
+    b"case IDs of the presented commitments, in the exact presented order, one "
+    b"per line, each line being exactly 'ADOPT <case_id>' with a single space and "
+    b"no leading/trailing whitespace, lines separated by a single LF, with at "
+    b"most one optional final LF and no other whitespace or content. No JSON, no "
+    b"extra text, no blank lines."
 )
 ORIGIN_RESPONSE_CONTRACT_SHA256 = sha256_bytes(ORIGIN_RESPONSE_CONTRACT_SPEC)
 
@@ -85,9 +90,8 @@ def canonical_commitment_records(
 def commitments_hash(records: tuple[tuple[str, bytes], ...]) -> str:
     """SHA-256 over the ORDERED canonical case_id -> commitment-bytes mapping.
 
-    The hash is computed over a bytes-level canonical stream (case_id, length-
-    prefixed exact commitment bytes) so that exact binary commitment bytes are
-    preserved and hashed, never collapsed to text.
+    Computed over a bytes-level canonical stream (case_id, length-prefixed exact
+    commitment bytes) so exact commitment bytes are hashed, never collapsed to text.
     """
     parts: list[bytes] = []
     for cid, cb in records:
@@ -95,6 +99,48 @@ def commitments_hash(records: tuple[tuple[str, bytes], ...]) -> str:
         parts.append(len(cb).to_bytes(8, "big"))
         parts.append(cb)
     return sha256_bytes(b"\x00".join(parts))
+
+
+def _origin_input_text(origin_prompt: bytes, records: tuple[tuple[str, bytes], ...]) -> str:
+    """The exact `input` payload text sent to Luna (prompt + ordered commitments)."""
+    body = origin_prompt.decode("utf-8")
+    records_json = json.dumps({"commitments": [[cid, cb.decode("utf-8")] for cid, cb in records]})
+    return f"{body}\n\n{records_json}"
+
+
+def build_origin_request_bytes(
+    origin_prompt: bytes,
+    records: list[tuple[str, bytes]],
+) -> bytes:
+    """Exact Luna /v1/responses request bytes for one origin session.
+
+    Reuses the direct Responses-API request surface (gpt-5.6-luna, reasoning
+    effort=xhigh, context=current_turn, store=false, max_output_tokens=128000),
+    with the origin prompt + ordered commitment records as the `input`.
+    """
+    rec = canonical_commitment_records(records)
+    return canonical_json_bytes(build_request_body(_origin_input_text(origin_prompt, rec)))
+
+
+def _parse_origin_adoptions_exact(
+    final_output: bytes, case_ids: tuple[str, ...]
+) -> Mapping[str, bool]:
+    """Parse the EXACT origin-adoption-v1 contract. No JSON/strip/coercion.
+
+    final_output must be exactly, for all presented case IDs in the exact given
+    order, one 'ADOPT <case_id>' per line, lines separated by single LF, with at
+    most one optional trailing LF and no other whitespace or content.
+    """
+    if not case_ids:
+        raise OriginResponseContractFailure("no case IDs to adopt")
+    expected_lines = [b"ADOPT " + cid.encode() for cid in case_ids]
+    if final_output == b"\n".join(expected_lines):
+        return {cid: True for cid in case_ids}
+    if final_output == (b"\n".join(expected_lines) + b"\n"):
+        return {cid: True for cid in case_ids}
+    raise OriginResponseContractFailure(
+        "origin final output does not match EXACT origin-adoption-v1 contract"
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -107,40 +153,50 @@ class OriginSessionArtifact:
     commitment_sha256: str
     model_configuration_sha256: str
     request_sha256: str
-    provider_response_sha256: str
-    provider_response_bytes: bytes  # preserved raw provider bytes (verifier proves)
-    adoption: Mapping[str, bool]  # case_id -> adopted (verifier proves all True)
+    raw_provider_response_sha256: str
+    raw_provider_response_bytes: bytes  # complete Responses API JSON (preserved)
+    final_output_sha256: str
+    final_output_bytes: bytes  # extracted assistant ADOPT-line output
     timestamp: str
     provider_metadata: Mapping[str, Any]
 
     def __post_init__(self) -> None:
         if self.structure not in FROZEN_STRUCTURES:
             raise ValueError(f"origin artifact declares unknown structure: {self.structure}")
-        expected = set(e for e, _ in self.commitment_records)
-        if set(self.adoption) != expected:
-            raise ValueError("adoption keys must match the presented case IDs exactly")
         if self.commitment_sha256 != commitments_hash(self.commitment_records):
             raise ValueError("commitment records/hash mismatch")
-        if len(self.request_sha256) != 64 or len(self.provider_response_sha256) != 64:
-            raise ValueError("origin request/response hashes must be SHA-256 hex")
-        if self.provider_response_sha256 != sha256_bytes(self.provider_response_bytes):
-            raise ValueError("provider-response bytes/SHA mismatch")
+        if len(self.request_sha256) != 64:
+            raise ValueError("request_sha256 must be SHA-256 hex")
+        if self.raw_provider_response_sha256 != sha256_bytes(self.raw_provider_response_bytes):
+            raise ValueError("raw provider-response bytes/SHA mismatch")
+        if self.final_output_sha256 != sha256_bytes(self.final_output_bytes):
+            raise ValueError("final-output bytes/SHA mismatch")
 
     @property
     def case_ids(self) -> tuple[str, ...]:
         return tuple(e for e, _ in self.commitment_records)
 
     def canonical_record(self) -> dict[str, Any]:
+        """Durable serialization that PRESERVES the raw provider response bytes.
+
+        The complete raw provider JSON is base64-encoded into the record (and its
+        SHA asserted), so it survives canonical serialization rather than living
+        only in an in-memory field.
+        """
         return {
-            "adoption": {k: bool(v) for k, v in self.adoption.items()},
             "commitment_records": [
                 [e, b.decode("utf-8", "replace")] for e, b in self.commitment_records
             ],
             "commitment_sha256": self.commitment_sha256,
+            "final_output_bytes": self.final_output_bytes.decode("utf-8", "replace"),
+            "final_output_sha256": self.final_output_sha256,
             "model_configuration_sha256": self.model_configuration_sha256,
             "origin_run_id": self.origin_run_id,
-            "provider_response_sha256": self.provider_response_sha256,
             "provider_metadata": dict(self.provider_metadata),
+            "raw_provider_response_base64": base64.b64encode(
+                self.raw_provider_response_bytes
+            ).decode("ascii"),
+            "raw_provider_response_sha256": self.raw_provider_response_sha256,
             "request_sha256": self.request_sha256,
             "structure": self.structure.value,
             "timestamp": self.timestamp,
@@ -154,73 +210,16 @@ class OriginSessionArtifact:
         return sha256_bytes(self.to_exact_bytes())
 
 
-def build_origin_request_bytes(
-    origin_prompt: bytes,
-    records: list[tuple[str, bytes]],
-) -> bytes:
-    """Exact request bytes for one origin session (ordered case_id -> commitment).
+def parse_raw_provider_response(raw_bytes: bytes) -> str:
+    """Parse the raw Responses JSON through the strict direct-Luna contract.
 
-    Embeds the SAME case IDs the response contract references, so the response
-    parse can be checked against exactly the presented set.
+    Returns the extracted final assistant output_text. Raises on any contract
+    violation (missing/incomplete status, model mismatch, reasoning context,
+    errors, incomplete details, malformed output) so missing model/status
+    evidence fails closed.
     """
-    rec = canonical_commitment_records(records)
-    return canonical_json_bytes(
-        {
-            "input": [
-                {"role": "user", "content": origin_prompt.decode("utf-8")},
-                {
-                    "role": "user",
-                    "content": json.dumps(
-                        {"commitments": [[cid, cb.decode("utf-8")] for cid, cb in rec]}
-                    ),
-                },
-            ],
-            "max_output_tokens": 64,
-        }
-    )
-
-
-def _parse_adoptions(raw: bytes, case_ids: tuple[str, ...]) -> Mapping[str, bool]:
-    """Parse a strict adoption response; any deviation raises a contract failure."""
-    stripped = raw.strip()
-    expected = set(case_ids)
-    if not stripped:
-        raise OriginResponseContractFailure("empty origin response")
-    try:
-        obj = json.loads(stripped.decode("utf-8"))
-    except Exception:
-        obj = None
-    if isinstance(obj, dict):
-        keys = set(obj.keys())
-        if keys != expected:
-            raise OriginResponseContractFailure(
-                f"origin response case coverage mismatch: {sorted(keys - expected)} extra, "
-                f"{sorted(expected - keys)} missing"
-            )
-        adoption: dict[str, bool] = {}
-        for cid, val in obj.items():
-            if val is not True:
-                raise OriginResponseContractFailure(f"non-adoption for {cid}")
-            adoption[cid] = True
-        return adoption
-    # fallback: ordered "ADOPT <case_id>" lines, one per case, exact count/order
-    lines = stripped.splitlines()
-    if len(lines) != len(case_ids):
-        raise OriginResponseContractFailure(
-            f"origin response expected {len(case_ids)} ADOPT lines, got {len(lines)}"
-        )
-    adoption2: dict[str, bool] = {}
-    for line in lines:
-        m = _ADOPT_LINE.fullmatch(line.strip())
-        if m is None:
-            raise OriginResponseContractFailure(f"malformed origin line: {line[:40]!r}")
-        cid = m.group(1).decode("ascii")
-        if cid not in expected or cid in adoption2:
-            raise OriginResponseContractFailure(f"duplicate/unknown case id in origin line: {cid}")
-        adoption2[cid] = True
-    if set(adoption2) != expected:
-        raise OriginResponseContractFailure("origin response did not adopt all listed commitments")
-    return adoption2
+    parsed = parse_scoring_response(raw_bytes)
+    return parsed.final_answer
 
 
 def verify_origin_artifact(
@@ -229,19 +228,17 @@ def verify_origin_artifact(
     origin_prompt: bytes,
     expected_structure: StructureId,
     expected_case_ids: tuple[str, ...],
-    authoritative_luna_config_sha256: str,
-    expected_provider_model: str | None = None,
-    expected_provider_status: str | None = None,
+    authoritative_luna_config_sha256: str = DIRECT_CONFIG_HASH,
+    expected_provider_model: str = MODEL,
 ) -> None:
-    """Mechanical real-origin verifier. Raises unless every proof holds.
+    """Full mechanical real-origin verifier. Raises unless EVERY proof holds.
 
-    A manually populated adoption dict alone never constitutes proof; the verifier
-    re-checks structure, the exact 12 case IDs, exact commitment records, the Luna
-    config hash, the re-derived request SHA, preserved provider bytes + SHA,
-    whether the provider response reparses under the frozen contract, and that all
-    12 commitments are adopted (recomputed from the re-parsed response, not from
-    the artifact's populated booleans). When live provider metadata is supplied,
-    it also asserts the expected model/status.
+    The verifier reparses the preserved raw provider JSON through the strict
+    direct-Luna Responses contract (enforcing model gpt-5.6-luna, completed
+    status, reasoning context, no errors/incomplete), extracts the final ADOPT
+    output, and applies the EXACT origin-adoption-v1 contract. A manually
+    populated adoption dict is never used as proof. Missing model/status evidence
+    fails closed via the strict parser.
     """
     if artifact.structure is not expected_structure:
         raise OriginResponseContractFailure("origin artifact declares the wrong structure")
@@ -250,7 +247,9 @@ def verify_origin_artifact(
     if artifact.commitment_sha256 != commitments_hash(artifact.commitment_records):
         raise OriginResponseContractFailure("commitment records/hash mismatch")
     if artifact.model_configuration_sha256 != authoritative_luna_config_sha256:
-        raise OriginResponseContractFailure("origin model configuration != Luna config")
+        raise OriginResponseContractFailure(
+            "origin model configuration != authoritative Luna config"
+        )
     expected_request_sha = sha256_bytes(
         build_origin_request_bytes(origin_prompt, list(artifact.commitment_records))
     )
@@ -258,22 +257,25 @@ def verify_origin_artifact(
         raise OriginResponseContractFailure(
             "origin request SHA does not match the re-derived origin request"
         )
-    if artifact.provider_response_sha256 != sha256_bytes(artifact.provider_response_bytes):
-        raise OriginResponseContractFailure("provider-response bytes/SHA mismatch")
-    # Reparse the provider response under the frozen contract; this is the proof,
-    # not the artifact's stored adoption booleans.
-    parsed = _parse_adoptions(artifact.provider_response_bytes, artifact.case_ids)
+    if artifact.raw_provider_response_sha256 != sha256_bytes(artifact.raw_provider_response_bytes):
+        raise OriginResponseContractFailure("raw provider-response bytes/SHA mismatch")
+    if artifact.final_output_sha256 != sha256_bytes(artifact.final_output_bytes):
+        raise OriginResponseContractFailure("final-output bytes/SHA mismatch")
+    # Re-parse the raw provider JSON through the strict direct-Luna contract.
+    # This is what fails closed on missing model/status/incomplete.
+    extracted = parse_raw_provider_response(artifact.raw_provider_response_bytes)
+    if extracted.encode("utf-8") != artifact.final_output_bytes:
+        raise OriginResponseContractFailure(
+            "final output does not match the re-extracted assistant output_text"
+        )
+    # Apply the EXACT origin-adoption-v1 contract to the final output.
+    parsed = _parse_origin_adoptions_exact(artifact.final_output_bytes, artifact.case_ids)
     if set(parsed) != set(expected_case_ids) or not all(parsed.values()):
         raise OriginResponseContractFailure(
             "provider response did not adopt all expected commitments"
         )
-    if expected_provider_model is not None:
-        returned = artifact.provider_metadata.get("model") or artifact.provider_metadata.get(
-            "returned_model"
-        )
-        if returned and returned != expected_provider_model:
-            raise OriginResponseContractFailure("provider model does not match expected")
-    if expected_provider_status is not None:
-        status = artifact.provider_metadata.get("status")
-        if status and status != expected_provider_status:
-            raise OriginResponseContractFailure("provider status does not match expected")
+    returned = artifact.provider_metadata.get("model") or artifact.provider_metadata.get(
+        "returned_model"
+    )
+    if returned is not None and returned != expected_provider_model:
+        raise OriginResponseContractFailure("provider model does not match expected")

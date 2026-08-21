@@ -69,7 +69,17 @@ produce or alter commitment wording.
 - origin calls are **establishment/provenance calls only** and never enter
   threshold calibration, scoring, or analysis.
 
-## 7. Freeze statement
+## 7. Frozen execution authorities (final, for ratification)
+
+The document we ratify names the actual frozen execution authorities:
+
+- **origin prompt SHA-256:** `f17d7e99f1c09abfa4869a2f8363cca283d5b859a3d824b02c4002189f93ccfe`
+- **response-contract version:** `origin-adoption-v1`
+- **response-contract SHA-256:** `430900f7fdb4703920eb70a29f8a4e15972bf0292e8a6369a4df028c90ba4c42`
+- **authoritative Luna configuration SHA-256 (DIRECT_CONFIG_HASH):**
+  `b3e21561ef3f84e2c38275f761ba8c7cbdf1e4a2ede04972f924f58d4827d9fa`
+
+## 8. Freeze statement
 
 FROZEN Protocol v1.0 is not altered in place by this document. If ratified, this
 amendment becomes a separately documented protocol revision governing the

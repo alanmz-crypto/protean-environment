@@ -268,16 +268,10 @@ def _prov(name: str) -> EvaluatorProvenance:
 
 
 def _dummy_config() -> ModelConfiguration:
-    return ModelConfiguration(
-        provider="test",
-        model_id="test-model",
-        version_or_snapshot=None,
-        reasoning_settings={},
-        temperature=0.1,
-        seed=None,
-        max_output_length=16,
-        api_parameters={},
-    )
+    # The Stage-1A seal requires the authoritative frozen Luna configuration.
+    from protean_stage0.direct_config import direct_model_configuration
+
+    return direct_model_configuration()
 
 
 # ---- hardening: harness-revision seal ----
