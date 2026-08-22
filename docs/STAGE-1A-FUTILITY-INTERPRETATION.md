@@ -61,7 +61,7 @@ Existing evidence does not distinguish H1, H2, and H3.
 
 ## 4. Explicit Nonclaims
 
-This candidate does not claim that:
+This ratified interpretation record does not claim that:
 
 - Luna is universally perfectly calibrated.
 - Deterministic truth logically requires epistemic confidence `0`/`1`.
@@ -100,8 +100,9 @@ It does not authorize prompt or configuration changes.
 - Whether later characterization calls require a protocol addendum is reserved
   for Ryan HITL decision.
 - Kiro recommends that any such calls conservatively require a minimal
-  characterization addendum before execution. This candidate records that
-  recommendation but does not ratify it.
+  characterization addendum before execution. This record preserves that
+  recommendation but does not ratify the recommendation as experimental or
+  execution authority.
 
 ## 8. Review Status
 
@@ -114,6 +115,6 @@ It does not authorize prompt or configuration changes.
 
 ## Boundary
 
-This is a candidate record only. It does not alter any frozen authority,
-quantitative result, protocol, amendment, source, test, or Stage-1B material.
-It is not a ratification record and does not authorize execution.
+This is a ratified, non-authoritative interpretation record. It does not alter
+any frozen authority, quantitative result, protocol, amendment, source, test,
+or Stage-1B material, and it does not authorize execution.
