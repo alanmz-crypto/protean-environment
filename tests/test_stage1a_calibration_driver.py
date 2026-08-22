@@ -581,7 +581,12 @@ def test_threshold_c_equals_50_yields_deterministic_futility_stop(tmp_path: Path
         evidence_sink=sink,
     )
     assert completed is not None
-    report = compute_calibration_report(completed, truth_map=manifest.truth_map)
+    report = compute_calibration_report(
+        completed,
+        expected_manifest_sha256=manifest.sha256,
+        expected_batch_run_id=manifest.batch_run_id,
+        truth_map=manifest.truth_map,
+    )
     assert report["stage1b_projection"] == "DETERMINISTIC_FUTILITY_STOP"
 
 
@@ -667,3 +672,240 @@ def _real_stage1a_manifest() -> Any:
         origin_completed_run_sha256="0" * 64,
         origin_batch_run_id="b",
     )
+
+
+# ---------------------------------------------------------------------------
+# Correction 1 regression: duplicated/substituted origin artifact cannot pass the
+# canonical prepare-path verifier (Claude-proven gap).
+# ---------------------------------------------------------------------------
+def test_duplicated_artifact_slot_attack_rejected(tmp_path: Path) -> None:
+    chain = _origin_chain(tmp_path)
+    art_dir = Path(tmp_path) / "origin"
+    # Duplicate slot-1 content into slot-2's file (superficially matching batch/manifest).
+    slot1 = next(art_dir.glob("origin-artifact-*-01.json"))
+    slot2 = next(art_dir.glob("origin-artifact-*-02.json"))
+    slot2.write_bytes(slot1.read_bytes())
+    assert slot1.read_bytes() == slot2.read_bytes()
+    with pytest.raises(ValueError, match="request index"):
+        build_calibration_manifest(harness_revision=HEAD, **chain)
+
+
+def test_swapped_valid_artifacts_rejected(tmp_path: Path) -> None:
+    chain = _origin_chain(tmp_path)
+    art_dir = Path(tmp_path) / "origin"
+    slot1 = next(art_dir.glob("origin-artifact-*-01.json"))
+    slot2 = next(art_dir.glob("origin-artifact-*-02.json"))
+    c1, c2 = slot1.read_bytes(), slot2.read_bytes()
+    slot1.write_bytes(c2)
+    slot2.write_bytes(c1)  # swap the two valid artifacts
+    with pytest.raises(ValueError):
+        build_calibration_manifest(harness_revision=HEAD, **chain)
+
+
+# ---------------------------------------------------------------------------
+# Correction 2: the REAL production CLI --execute-live success path (60/60/0),
+# through a payload-aware fake at the network boundary (no transport injection).
+# ---------------------------------------------------------------------------
+def test_cli_execute_live_completed_60_60(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import protean_stage0.direct_responses as dr
+    import protean_stage0.stage1a_calibration_cli as cli
+    from protean_stage0.stage1a_calibration_driver import _build_calibration_specs
+
+    manifest, manifest_bytes, _ = _prepared_manifest(tmp_path)
+    mpath = tmp_path / "cal.json"
+    mpath.write_bytes(manifest_bytes)
+    origin = _origin_chain(tmp_path)
+    out = tmp_path / "out"
+
+    # Deterministic expected request bytes, in manifest order.
+    specs = _build_calibration_specs(
+        auth=_auth(), harness_revision=HEAD, batch_run_id=manifest.batch_run_id
+    )
+    expected_by_index = {s.request_index: s.request_bytes for s in specs}
+
+    transmitted: list[bytes] = []
+    calls = {"n": 0}
+
+    def fake_default_transport(*, payload: bytes, api_key: str, timeout_seconds: int) -> Any:
+        # Payload-aware: only accept exactly one of the sealed request bytes; reject if a
+        # payload is not one of the 60 sealed requests or repeats an index out of order.
+        calls["n"] += 1
+        n = calls["n"]
+        if n > 60:
+            return dr.TransportResult(400, b"too many requests")
+        expected = expected_by_index[n]
+        if payload != expected:
+            return dr.TransportResult(400, b"payload does not match sealed request")
+        transmitted.append(payload)
+        return dr.TransportResult(200, _scoring_ok("0.60"))
+
+    # Network boundary: the CLI's fixed transport homes in on its module-level
+    # default_transport binding. Patch exactly that (no transport-injection param).
+    monkeypatch.setattr(cli, "default_transport", fake_default_transport)
+    monkeypatch.setattr(cli, "working_tree_is_clean", lambda: True)
+    monkeypatch.setattr(cli, "derive_head", lambda: HEAD)
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test-dummy")
+
+    # Capture stdout on the single invocation to assert the COMPLETED status line.
+    import io
+    from contextlib import redirect_stdout
+
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        rc = cli.run_cli(
+            [
+                "--execute-live",
+                "--manifest",
+                str(mpath),
+                "--expected-manifest-sha",
+                manifest.sha256,
+                "--origin-manifest",
+                str(origin["origin_manifest_path"]),
+                "--origin-manifest-sha",
+                origin["origin_manifest_sha256"],
+                "--origin-completed",
+                str(origin["origin_completed_path"]),
+                "--origin-completed-sha",
+                origin["origin_completed_sha256"],
+                "--origin-artifacts-dir",
+                str(origin["origin_artifacts_dir"]),
+                "--origin-batch",
+                origin["origin_batch_run_id"],
+                "--out-dir",
+                str(out),
+            ],
+        )
+    assert rc == 0
+    assert "calibration_status=COMPLETED" in buf.getvalue()
+    # exactly 60 transport calls and the payload bytes equal the sealed request bytes.
+    assert calls["n"] == 60
+    assert transmitted == [expected_by_index[i] for i in range(1, 61)]
+    # evidence + one completed authority, byte-exact reconstruction, order matches manifest.
+    ev_files = sorted(out.glob("calibration-evidence-*.json"))
+    comp_files = list(out.glob("calibration-completed-*.json"))
+    assert len(ev_files) == 60
+    assert len(comp_files) == 1
+    completed = CalibrationCompletedRun._reconstruct(comp_files[0].read_bytes())
+    assert completed.to_exact_bytes() == comp_files[0].read_bytes()
+    assert completed.ordered_case_ids == manifest.ordered_case_ids
+
+
+# ---------------------------------------------------------------------------
+# Correction 3: analysis gating NON-OPTIONAL inside compute_calibration_report.
+# ---------------------------------------------------------------------------
+def test_report_allowed_with_correct_manifest_batch(tmp_path: Path) -> None:
+    manifest, manifest_bytes, _ = _prepared_manifest(tmp_path)
+    transport, _ = _ok_transport(score="0.60")
+    sink = AtomicCalibrationSink(tmp_path / "cal")
+    _, _, completed = execute_calibration_run(
+        manifest_bytes=manifest_bytes,
+        expected_manifest_sha256=manifest.sha256,
+        actual_harness_revision=HEAD,
+        auth=_auth(),
+        batch_run_id=manifest.batch_run_id,
+        transport=transport,
+        evidence_sink=sink,
+    )
+    assert completed is not None
+    report = compute_calibration_report(
+        completed,
+        expected_manifest_sha256=manifest.sha256,
+        expected_batch_run_id=manifest.batch_run_id,
+        truth_map=manifest.truth_map,
+    )
+    assert report["manifest_sha256"] == manifest.sha256
+
+
+def test_report_rejects_wrong_manifest_sha(tmp_path: Path) -> None:
+    manifest, manifest_bytes, _ = _prepared_manifest(tmp_path)
+    transport, _ = _ok_transport(score="0.60")
+    sink = AtomicCalibrationSink(tmp_path / "cal")
+    _, _, completed = execute_calibration_run(
+        manifest_bytes=manifest_bytes,
+        expected_manifest_sha256=manifest.sha256,
+        actual_harness_revision=HEAD,
+        auth=_auth(),
+        batch_run_id=manifest.batch_run_id,
+        transport=transport,
+        evidence_sink=sink,
+    )
+    assert completed is not None
+    with pytest.raises(ValueError, match="manifest SHA"):
+        compute_calibration_report(
+            completed,
+            expected_manifest_sha256="0" * 64,
+            expected_batch_run_id=manifest.batch_run_id,
+            truth_map=manifest.truth_map,
+        )
+
+
+def test_report_rejects_wrong_batch(tmp_path: Path) -> None:
+    manifest, manifest_bytes, _ = _prepared_manifest(tmp_path)
+    transport, _ = _ok_transport(score="0.60")
+    sink = AtomicCalibrationSink(tmp_path / "cal")
+    _, _, completed = execute_calibration_run(
+        manifest_bytes=manifest_bytes,
+        expected_manifest_sha256=manifest.sha256,
+        actual_harness_revision=HEAD,
+        auth=_auth(),
+        batch_run_id=manifest.batch_run_id,
+        transport=transport,
+        evidence_sink=sink,
+    )
+    assert completed is not None
+    with pytest.raises(ValueError, match="batch"):
+        compute_calibration_report(
+            completed,
+            expected_manifest_sha256=manifest.sha256,
+            expected_batch_run_id="wrong-batch",
+            truth_map=manifest.truth_map,
+        )
+
+
+def test_report_rejects_59_of_60(tmp_path: Path) -> None:
+    manifest, manifest_bytes, _ = _prepared_manifest(tmp_path)
+    calls: list[int] = []
+
+    def transport(*, payload: bytes) -> Any:
+        n = len(calls) + 1
+        calls.append(n)
+        if n == 59:
+            return (503, b"err", None, {})
+        return (200, None, _scoring_ok(), {"model": MODEL})
+
+    sink = AtomicCalibrationSink(tmp_path / "cal")
+    _, _, completed = execute_calibration_run(
+        manifest_bytes=manifest_bytes,
+        expected_manifest_sha256=manifest.sha256,
+        actual_harness_revision=HEAD,
+        auth=_auth(),
+        batch_run_id=manifest.batch_run_id,
+        transport=transport,
+        evidence_sink=sink,
+    )
+    assert completed is None
+    with pytest.raises(ValueError, match="completed"):
+        compute_calibration_report(
+            None,
+            expected_manifest_sha256=manifest.sha256,
+            expected_batch_run_id=manifest.batch_run_id,
+            truth_map=manifest.truth_map,
+        )
+
+
+def test_report_rejects_fabricated_self_consistent_object() -> None:
+    # A length-60 self-consistent object cannot bypass the outer manifest/batch binding.
+    fake = CalibrationCompletedRun(
+        manifest_sha256="cafebabe" * 8,
+        batch_run_id="fabricated",
+        ordered_case_ids=tuple(f"S1A-{i:02d}" for i in range(1, 61)),
+        evidence_shas=tuple(("aa" * 32) for _ in range(60)),
+        scores=(0.5,) * 60,
+    )
+    with pytest.raises(ValueError, match="manifest SHA"):
+        compute_calibration_report(
+            fake,
+            expected_manifest_sha256="0" * 64,
+            expected_batch_run_id="expected-batch",
+            truth_map={f"S1A-{i:02d}": (i % 2 == 0) for i in range(1, 61)},
+        )

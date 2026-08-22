@@ -33,6 +33,7 @@ from .direct_config import DIRECT_CONFIG_HASH
 from .direct_responses import (
     parse_scoring_response,
 )
+from .grammar import FROZEN_STRUCTURES, StructureId
 from .parse_contract import PLAIN_DECIMAL_V1_SHA256, parse_plain_decimal_v1
 from .stage1a_authority import (
     EXPECTED_SCORING_PROMPT_SHA,
@@ -45,7 +46,12 @@ from .stage1a_config import (
     STAGE1A_SEED,
     STAGE1A_TOTAL,
 )
-from .stage1a_origin import OriginSessionArtifact
+from .stage1a_origin import (
+    ORIGIN_PROMPT,
+    OriginSessionArtifact,
+    canonical_commitment_records,
+    verify_origin_artifact,
+)
 from .stage1a_origin_driver import CompletedOriginRun, validate_origin_run_manifest_seal
 from .stage1a_origin_run_manifest import Stage1AOriginRunManifest
 from .stage1a_threshold import ScoredCase, compute_stage1a_report
@@ -540,17 +546,59 @@ def _verify_origin_chain(
     if completed.manifest_sha256 != origin_manifest_sha256:
         raise ValueError("origin completed-run manifest SHA does not match origin manifest")
 
+    # Canonical strong origin-chain verification (shared by prepare AND live).
+    # 7) CompletedOriginRun must be a genuine 5/5/0.
+    if not (
+        completed.attempts == 5
+        and completed.successes == 5
+        and completed.failures == 0
+        and len(completed.artifact_shas) == 5
+    ):
+        raise ValueError("origin completed-run must be 5 attempts / 5 successes / 0 failures")
+
     artifacts = load_origin_run_artifacts(
         artifacts_dir=origin_artifacts_dir, batch_run_id=origin_batch_run_id
     )
+    # 1) exactly five artifacts.
     if len(artifacts) != 5:
         raise ValueError("origin chain requires exactly five origin artifacts")
-    # Every artifact must bind the origin manifest + completed SHA and the batch.
-    for art in artifacts:
-        if getattr(art, "origin_manifest_sha256", None) != origin_manifest_sha256:
-            raise ValueError("origin artifact manifest SHA does not match origin manifest")
+    # Build the frozen expectation per request index from loaded authorities.
+    by_structure_cids: dict[StructureId, tuple[str, ...]] = {
+        s: tuple(c.case_id for c in auth.case_set.cases if c.structured_spec.structure_id is s)
+        for s in FROZEN_STRUCTURES
+    }
+    by_case_commitment = {c.case_id: c.commitment.encode() for c in auth.case_set.cases}
+    for index, art in enumerate(artifacts, start=1):
+        expected_structure = FROZEN_STRUCTURES[index - 1]
+        # 2) request indices exactly 1..5 once each.
+        if getattr(art, "request_index", None) != index:
+            raise ValueError(f"origin artifact request index must be {index}")
+        # 3) exact frozen structure for this index.
+        if getattr(art, "structure", None) is not expected_structure:
+            raise ValueError("origin artifact structure does not match its request index")
+        # 4) exact common origin batch.
         if getattr(art, "batch_run_id", None) != origin_batch_run_id:
             raise ValueError("origin artifact batch does not match the origin batch")
+        # 5) exact common origin-manifest SHA.
+        if getattr(art, "origin_manifest_sha256", None) != origin_manifest_sha256:
+            raise ValueError("origin artifact manifest SHA does not match origin manifest")
+        # 6) artifact SHA == the exact slot in CompletedOriginRun.artifact_shas.
+        if art.sha256 != completed.artifact_shas[index - 1]:
+            raise ValueError("origin artifact SHA does not match its completed-run slot")
+        # 9) mechanical content verification against the frozen case IDs + exact
+        #    commitment bytes (not mere self-consistency).
+        cids = by_structure_cids[expected_structure]
+        records = canonical_commitment_records([(cid, by_case_commitment[cid]) for cid in cids])
+        verify_origin_artifact(
+            art,
+            origin_prompt=ORIGIN_PROMPT,
+            expected_structure=expected_structure,
+            expected_case_ids=cids,
+            expected_commitment_records=records,
+            expected_origin_manifest_sha256=origin_manifest_sha256,
+            expected_batch_run_id=origin_batch_run_id,
+            expected_request_index=index,
+        )
     return completed, tuple(artifacts)
 
 
@@ -933,15 +981,25 @@ def require_valid_completed_calibration(
 
 
 def compute_calibration_report(
-    completed: CalibrationCompletedRun,
+    completed: CalibrationCompletedRun | None,
     *,
+    expected_manifest_sha256: str,
+    expected_batch_run_id: str,
     truth_map: Mapping[str, bool],
 ) -> Any:
-    """Deterministic Stage-1A threshold report from a valid completed run.
+    """Deterministic Stage-1A threshold report from a VALID completed run.
 
-    Uses the SINGLE shared score per case for both B and C (no second B/C calls).
-    Delegates to the frozen 17-threshold selection + futility rule.
+    The completed run's outer authority is mandatory: it must be a genuine 60/60/0
+    authority with the exact expected manifest SHA + batch (via the canonical
+    ``require_valid_completed_calibration`` gate). Only the validated object may be
+    analyzed. Uses the SINGLE shared score per case for both B and C (no second B/C
+    calls) and delegates to the frozen 17-threshold selection + futility rule.
     """
+    completed = require_valid_completed_calibration(
+        completed,
+        expected_manifest_sha256=expected_manifest_sha256,
+        expected_batch_run_id=expected_batch_run_id,
+    )
     scored = tuple(
         ScoredCase(case_id=cid, score=score, truth_label=bool(truth_map[cid]))
         for cid, score in zip(completed.ordered_case_ids, completed.scores, strict=True)

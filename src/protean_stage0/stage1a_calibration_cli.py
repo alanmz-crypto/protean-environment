@@ -40,12 +40,11 @@ from .stage1a_calibration_driver import (
     AtomicCalibrationSink,
     Stage1ACalibrationManifest,
     _build_calibration_specs,
+    _verify_origin_chain,
     build_calibration_manifest,
     execute_calibration_run,
     validate_calibration_manifest_seal_exact,
 )
-from .stage1a_origin_driver import CompletedOriginRun, validate_origin_run_manifest_seal
-from .stage1a_origin_run_manifest import Stage1AOriginRunManifest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_MANIFEST_DIR = REPO_ROOT / "stage0/runs"
@@ -209,39 +208,22 @@ def run_cli(argv: list[str] | None = None) -> int:
             print("STOP: calibration manifest bytes do not hash to expected SHA (0 calls)")
             return 2
         auth = load_authority_artifacts(verify_expected=True)
-        # Re-read + verify the entire origin chain freshly.
-        if sha256_bytes(origin_manifest_path.read_bytes()) != origin_manifest_sha:
-            print("STOP: origin manifest does not hash to authorized SHA (0 calls)")
+        # Re-read + verify the entire origin chain through the SAME canonical strong
+        # verifier used by preparation (single source of truth).
+        try:
+            _verify_origin_chain(
+                auth=auth,
+                actual_harness_revision=head,
+                origin_manifest_path=origin_manifest_path,
+                origin_manifest_sha256=origin_manifest_sha,
+                origin_completed_path=origin_completed_path,
+                origin_completed_sha256=origin_completed_sha,
+                origin_artifacts_dir=origin_artifacts_dir,
+                origin_batch_run_id=origin_batch,
+            )
+        except ValueError as exc:
+            print(f"STOP: origin-chain verification failed ({exc}) (0 calls)")
             return 2
-        om = Stage1AOriginRunManifest._reconstruct(origin_manifest_path.read_bytes())
-        if om.to_exact_bytes() != origin_manifest_path.read_bytes():
-            print("STOP: origin manifest is not canonical (0 calls)")
-            return 2
-        validate_origin_run_manifest_seal(
-            manifest=om,
-            manifest_sha256=origin_manifest_sha,
-            actual_harness_revision=head,
-            auth=auth,
-        )
-        if sha256_bytes(origin_completed_path.read_bytes()) != origin_completed_sha:
-            print("STOP: origin completed does not hash to authorized SHA (0 calls)")
-            return 2
-        oc = CompletedOriginRun.from_exact_bytes(origin_completed_path.read_bytes())
-        if oc.to_exact_bytes() != origin_completed_path.read_bytes():
-            print("STOP: origin completed is not canonical (0 calls)")
-            return 2
-        if oc.batch_run_id != origin_batch or om.batch_run_id != origin_batch:
-            print("STOP: origin batch mismatch (0 calls)")
-            return 2
-        # Reload + verify all five durable origin artifacts for the batch.
-        for index in range(1, 6):
-            ap = origin_artifacts_dir / f"origin-artifact-{origin_batch}-{index:02d}.json"
-            if not ap.exists():
-                print(f"STOP: missing origin artifact {ap} (0 calls)")
-                return 2
-            if sha256_bytes(ap.read_bytes()) != oc.artifact_shas[index - 1]:
-                print("STOP: origin artifact does not hash to completed authority (0 calls)")
-                return 2
         # Reconstruct the calibration manifest from exact bytes + full seal (N3 exact).
         manifest = validate_calibration_manifest_seal_exact(
             manifest=manifest,
