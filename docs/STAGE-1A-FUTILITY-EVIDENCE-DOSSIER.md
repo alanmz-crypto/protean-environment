@@ -45,8 +45,8 @@ The following exact bytes and reconstructed authorities were checked:
   records passed canonical byte-roundtrip, SHA, ordering, and completion checks.
 
 The repository's pre-artifact audit state was clean on `main` and matched
-`origin/main` at the audited revision. The dossier itself is intentionally left
-uncommitted for review.
+`origin/main` at the audited revision. The dossier is committed on `main` as a
+non-authoritative review artifact.
 
 ## Exact request reconstruction
 
@@ -258,6 +258,6 @@ cause to it.
 
 ## Boundary and status
 
-This file is a review artifact only. It is non-authoritative, uncommitted, and
-does not amend the Stage-1A authority, threshold result, protocol, or Stage-1B
+This file is a review artifact only. It is non-authoritative, committed on `main`,
+and does not amend the Stage-1A authority, threshold result, protocol, or Stage-1B
 status. Any decision or interpretation remains outside this evidence dossier.
