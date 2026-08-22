@@ -189,6 +189,64 @@ class Stage1AManifest:
     def to_exact_bytes(self) -> bytes:
         return canonical_json_bytes(self.canonical_record())
 
+    @classmethod
+    def _reconstruct(cls, raw: bytes) -> Stage1AManifest:
+        """Rebuild the manifest EXACTLY from its canonical bytes.
+
+        Strict N3 reconstruction contract: canonical reserialization of the rebuilt
+        object must reproduce the exact input bytes, and the recomputed SHA must
+        match the input (self-consistent). ``validate_stage1a_manifest_seal_exact``
+        enforces byte equality before any caller may use the object.
+        """
+        import json
+
+        from .schema import EvaluatorProvenance
+
+        def prov(d: Any) -> EvaluatorProvenance:
+            return EvaluatorProvenance(
+                evaluator_name=d["evaluator_name"],
+                author=d["author"],
+                authored_at=d["authored_at"],
+                grammar_version=d["grammar_version"],
+                grammar_sha256=d["grammar_sha256"],
+                independently_derived=d["independently_derived"],
+                implementation_sha256=d["implementation_sha256"],
+            )
+
+        data = json.loads(raw.decode("utf-8"))
+        return cls(
+            protocol_sha256=data["protocol_sha256"],
+            protocol_version=data["protocol_version"],
+            futility_amendment_sha256=data["futility_amendment_sha256"],
+            futility_amendment_version=data["futility_amendment_version"],
+            real_origin_amendment_sha256=data["real_origin_amendment_sha256"],
+            real_origin_amendment_version=data["real_origin_amendment_version"],
+            origin_mechanism_version=data["origin_mechanism_version"],
+            expected_origin_sessions=data["expected_origin_sessions"],
+            origin_response_contract=data["origin_response_contract"],
+            origin_prompt_sha256=data["origin_prompt_sha256"],
+            origin_response_contract_sha256=data["origin_response_contract_sha256"],
+            origin_run_manifest_sha256=data["origin_run_manifest_sha256"],
+            origin_completed_run_sha256=data["origin_completed_run_sha256"],
+            origin_batch_run_id=data["origin_batch_run_id"],
+            case_set_sha256=data["case_set_sha256"],
+            scoring_prompt_sha256=data["scoring_prompt_sha256"],
+            parse_contract_sha256=data["parse_contract_sha256"],
+            model_configuration_sha256=data["model_configuration_sha256"],
+            model_configuration=data["model_configuration"],
+            harness_revision=data["harness_revision"],
+            cross_session_rep_version=data["cross_session_rep_version"],
+            total_cases=data["total_cases"],
+            positive_count=data["positive_count"],
+            negative_count=data["negative_count"],
+            per_structure=data["per_structure"],
+            per_class_per_structure=data["per_class_per_structure"],
+            primary_evaluator=prov(data["primary_evaluator"]),
+            reference_evaluator=prov(data["reference_evaluator"]),
+            timestamp=data["timestamp"],
+            run_id=data["run_id"],
+        )
+
     @property
     def sha256(self) -> str:
         return sha256_bytes(self.to_exact_bytes())
@@ -303,3 +361,50 @@ def validate_stage1a_manifest_seal(
         if recorded != expected:
             raise ValueError(f"Stage-1A seal mismatch: {name}")
     manifest.validate_completeness()
+
+
+def validate_stage1a_manifest_seal_exact(
+    manifest: Stage1AManifest,
+    *,
+    actual_harness_revision: str,
+    protocol: FrozenArtifact,
+    futility_amendment: FrozenArtifact,
+    real_origin_amendment: FrozenArtifact,
+    case_set: FrozenCaseSet,
+    scoring_prompt: FrozenArtifact,
+    parse_contract_sha256: str,
+    model_configuration: ModelConfiguration,
+    expected_origin_run_manifest_sha256: str,
+    expected_origin_completed_run_sha256: str,
+    expected_origin_batch_run_id: str,
+) -> Stage1AManifest:
+    """Canonical production calibration seal (closes N3).
+
+    Validates ``manifest`` against the freshly loaded authorities and the expected
+    origin-chain bindings, then verifies exact-byte canonical reconstruction, then
+    returns the SAME manifest object that was passed through validation. There is no
+    separate calibration authority and no way to validate manifest A while the caller
+    consumes manifest B: the live wrapper must pass the object returned here into
+    ``Stage1APreparedRun.seal``, which mechanically forwards it as the authority.
+    """
+    validate_stage1a_manifest_seal(
+        manifest,
+        actual_harness_revision=actual_harness_revision,
+        protocol=protocol,
+        futility_amendment=futility_amendment,
+        real_origin_amendment=real_origin_amendment,
+        case_set=case_set,
+        scoring_prompt=scoring_prompt,
+        parse_contract_sha256=parse_contract_sha256,
+        model_configuration=model_configuration,
+        expected_origin_run_manifest_sha256=expected_origin_run_manifest_sha256,
+        expected_origin_completed_run_sha256=expected_origin_completed_run_sha256,
+        expected_origin_batch_run_id=expected_origin_batch_run_id,
+    )
+    # Exact-byte reconstruction contract: reserializing the manifest must reproduce
+    # the exact canonical bytes, and the recomputed SHA must self-consist.
+    rebuilt_raw = manifest.to_exact_bytes()
+    rebuilt = Stage1AManifest._reconstruct(rebuilt_raw)
+    if rebuilt.to_exact_bytes() != rebuilt_raw:
+        raise ValueError("Stage-1A manifest exact-byte reconstruction failed")
+    return manifest
