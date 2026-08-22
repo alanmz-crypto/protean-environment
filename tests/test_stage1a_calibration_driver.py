@@ -36,7 +36,9 @@ from protean_stage0.stage1a_origin_driver import (
     execute_origin_run,
 )
 
-HEAD = "SYNTHETIC-HEAD"
+# Blocker 1: the historical origin harness differs from the current calibration head.
+ORIGIN_HEAD = "SYNTHETIC-ORIGIN-HEAD"
+CALIBRATION_HEAD = "SYNTHETIC-CALIBRATION-HEAD"
 
 
 def _auth() -> Any:
@@ -117,13 +119,13 @@ def _origin_chain(tmp_path: Path) -> dict[str, Any]:
     _ORIGIN_SEQ["n"] += 1
     batch = f"hermetic-origin-{_ORIGIN_SEQ['n']}"
     manifest, specs = build_origin_run_manifest(
-        auth=auth, harness_revision=HEAD, batch_run_id=batch
+        auth=auth, harness_revision=ORIGIN_HEAD, batch_run_id=batch
     )
     sink = AtomicEvidenceSink(origin_dir)
     result = execute_origin_run(
         manifest_bytes=manifest.to_exact_bytes(),
         expected_manifest_sha256=manifest.sha256,
-        actual_harness_revision=HEAD,
+        actual_harness_revision=ORIGIN_HEAD,
         auth=auth,
         batch_run_id=batch,
         transport=_origin_transport(auth, specs),
@@ -144,6 +146,33 @@ def _origin_chain(tmp_path: Path) -> dict[str, Any]:
     }
 
 
+def _verified_authority(chain: dict[str, Any]) -> Any:
+    from protean_stage0.stage1a_calibration_driver import _verify_origin_chain
+
+    return _verify_origin_chain(
+        auth=_auth(),
+        expected_origin_harness_revision=ORIGIN_HEAD,
+        origin_manifest_path=chain["origin_manifest_path"],
+        origin_manifest_sha256=chain["origin_manifest_sha256"],
+        origin_completed_path=chain["origin_completed_path"],
+        origin_completed_sha256=chain["origin_completed_sha256"],
+        origin_artifacts_dir=chain["origin_artifacts_dir"],
+        origin_batch_run_id=chain["origin_batch_run_id"],
+    )
+
+
+def _fresh_prepared(tmp_path: Path) -> tuple[Any, bytes, Any, dict[str, Any]]:
+    """Build a calibration manifest at CALIBRATION_HEAD against an origin chain at
+    ORIGIN_HEAD. Returns (manifest, manifest_bytes, specs, origin_chain_dict)."""
+    chain = _origin_chain(tmp_path)
+    manifest, specs = build_calibration_manifest(
+        harness_revision=CALIBRATION_HEAD,
+        expected_origin_harness_revision=ORIGIN_HEAD,
+        **chain,
+    )
+    return manifest, manifest.to_exact_bytes(), specs, chain
+
+
 def _ok_transport(score: str = "0.73", *, count: dict[str, int] | None = None) -> Any:
     if count is None:
         count = {"n": 0}
@@ -155,20 +184,21 @@ def _ok_transport(score: str = "0.73", *, count: dict[str, int] | None = None) -
     return transport, count
 
 
-def _prepared_manifest(tmp_path: Path) -> tuple[Stage1ACalibrationManifest, bytes, Any]:
-    chain = _origin_chain(tmp_path)
-    manifest, specs = build_calibration_manifest(harness_revision=HEAD, **chain)
-    return manifest, manifest.to_exact_bytes(), specs
+def _prepared_manifest(tmp_path: Path) -> tuple[Stage1ACalibrationManifest, bytes, Any, Any]:
+    manifest, manifest_bytes, specs, chain = _fresh_prepared(tmp_path)
+    return manifest, manifest_bytes, specs, _verified_authority(chain)
 
 
 def _run_success(tmp_path: Path, *, count: dict[str, int] | None = None) -> Any:
-    manifest, manifest_bytes, _ = _prepared_manifest(tmp_path)
+    manifest, manifest_bytes, _specs, chain = _fresh_prepared(tmp_path)
+    verified = _verified_authority(chain)
     transport, count = _ok_transport(count=count)
     sink = AtomicCalibrationSink(tmp_path / "cal")
     status, evidence, completed = execute_calibration_run(
         manifest_bytes=manifest_bytes,
         expected_manifest_sha256=manifest.sha256,
-        actual_harness_revision=HEAD,
+        actual_harness_revision=CALIBRATION_HEAD,
+        verified_origin=verified,
         auth=_auth(),
         batch_run_id=manifest.batch_run_id,
         transport=transport,
@@ -182,7 +212,11 @@ def _run_success(tmp_path: Path, *, count: dict[str, int] | None = None) -> Any:
 # ---------------------------------------------------------------------------
 def test_prepare_mode_zero_provider_calls(tmp_path: Path) -> None:
     chain = _origin_chain(tmp_path)
-    manifest, specs = build_calibration_manifest(harness_revision=HEAD, **chain)
+    manifest, specs = build_calibration_manifest(
+        harness_revision=CALIBRATION_HEAD,
+        expected_origin_harness_revision=ORIGIN_HEAD,
+        **chain,
+    )
     assert len(specs) == 60
     assert manifest.expected_requests == 60
 
@@ -211,7 +245,7 @@ def test_60_60_completed_single_authority(tmp_path: Path) -> None:
 
 
 def test_failure_at_n_persists_evidence_no_nplus1(tmp_path: Path) -> None:
-    manifest, manifest_bytes, _ = _prepared_manifest(tmp_path)
+    manifest, manifest_bytes, _, verified = _prepared_manifest(tmp_path)
     calls: list[int] = []
 
     def transport(*, payload: bytes) -> Any:
@@ -225,7 +259,8 @@ def test_failure_at_n_persists_evidence_no_nplus1(tmp_path: Path) -> None:
     status, evidence, completed = execute_calibration_run(
         manifest_bytes=manifest_bytes,
         expected_manifest_sha256=manifest.sha256,
-        actual_harness_revision=HEAD,
+        actual_harness_revision=CALIBRATION_HEAD,
+        verified_origin=verified,
         auth=_auth(),
         batch_run_id=manifest.batch_run_id,
         transport=transport,
@@ -241,13 +276,14 @@ def test_failure_at_n_persists_evidence_no_nplus1(tmp_path: Path) -> None:
 
 
 def test_malformed_decimal_stops(tmp_path: Path) -> None:
-    manifest, manifest_bytes, _ = _prepared_manifest(tmp_path)
+    manifest, manifest_bytes, _, verified = _prepared_manifest(tmp_path)
     transport, _ = _ok_transport(score="0.5")
     sink = AtomicCalibrationSink(tmp_path / "cal")
     status, _evidence, completed = execute_calibration_run(
         manifest_bytes=manifest_bytes,
         expected_manifest_sha256=manifest.sha256,
-        actual_harness_revision=HEAD,
+        actual_harness_revision=CALIBRATION_HEAD,
+        verified_origin=verified,
         auth=_auth(),
         batch_run_id=manifest.batch_run_id,
         transport=transport,
@@ -258,7 +294,7 @@ def test_malformed_decimal_stops(tmp_path: Path) -> None:
 
 
 def test_59_of_60_cannot_complete(tmp_path: Path) -> None:
-    manifest, manifest_bytes, _ = _prepared_manifest(tmp_path)
+    manifest, manifest_bytes, _, verified = _prepared_manifest(tmp_path)
     calls: list[int] = []
 
     def transport(*, payload: bytes) -> Any:
@@ -272,7 +308,8 @@ def test_59_of_60_cannot_complete(tmp_path: Path) -> None:
     status, evidence, completed = execute_calibration_run(
         manifest_bytes=manifest_bytes,
         expected_manifest_sha256=manifest.sha256,
-        actual_harness_revision=HEAD,
+        actual_harness_revision=CALIBRATION_HEAD,
+        verified_origin=verified,
         auth=_auth(),
         batch_run_id=manifest.batch_run_id,
         transport=transport,
@@ -285,13 +322,14 @@ def test_59_of_60_cannot_complete(tmp_path: Path) -> None:
 
 
 def test_one_case_exactly_one_call_not_two(tmp_path: Path) -> None:
-    manifest, manifest_bytes, _ = _prepared_manifest(tmp_path)
+    manifest, manifest_bytes, _, verified = _prepared_manifest(tmp_path)
     transport, count = _ok_transport()
     sink = AtomicCalibrationSink(tmp_path / "cal")
     _, _evidence, completed = execute_calibration_run(
         manifest_bytes=manifest_bytes,
         expected_manifest_sha256=manifest.sha256,
-        actual_harness_revision=HEAD,
+        actual_harness_revision=CALIBRATION_HEAD,
+        verified_origin=verified,
         auth=_auth(),
         batch_run_id=manifest.batch_run_id,
         transport=transport,
@@ -305,7 +343,7 @@ def test_one_case_exactly_one_call_not_two(tmp_path: Path) -> None:
 # Stale HEAD / wrong origin chain -> zero client construction
 # ---------------------------------------------------------------------------
 def test_stale_head_zero_calls(tmp_path: Path) -> None:
-    manifest, manifest_bytes, _ = _prepared_manifest(tmp_path)
+    manifest, manifest_bytes, _, verified = _prepared_manifest(tmp_path)
     transport, count = _ok_transport()
     sink = AtomicCalibrationSink(tmp_path / "cal")
     with pytest.raises(ValueError, match="harness revision"):
@@ -313,6 +351,7 @@ def test_stale_head_zero_calls(tmp_path: Path) -> None:
             manifest_bytes=manifest_bytes,
             expected_manifest_sha256=manifest.sha256,
             actual_harness_revision="deadbeef" * 8,
+            verified_origin=verified,
             auth=_auth(),
             batch_run_id=manifest.batch_run_id,
             transport=transport,
@@ -326,7 +365,8 @@ def test_wrong_origin_manifest_sha_zero_calls(tmp_path: Path) -> None:
     chain = _origin_chain(tmp_path)
     with pytest.raises(ValueError, match="origin manifest"):
         build_calibration_manifest(
-            harness_revision=HEAD,
+            harness_revision=CALIBRATION_HEAD,
+            expected_origin_harness_revision=ORIGIN_HEAD,
             **{**chain, "origin_manifest_sha256": "0" * 64},
         )
 
@@ -335,7 +375,8 @@ def test_wrong_completed_run_sha_zero_calls(tmp_path: Path) -> None:
     chain = _origin_chain(tmp_path)
     with pytest.raises(ValueError, match="origin completed"):
         build_calibration_manifest(
-            harness_revision=HEAD,
+            harness_revision=CALIBRATION_HEAD,
+            expected_origin_harness_revision=ORIGIN_HEAD,
             **{**chain, "origin_completed_sha256": "0" * 64},
         )
 
@@ -344,7 +385,8 @@ def test_cross_batch_origin_substitution_zero_calls(tmp_path: Path) -> None:
     chain = _origin_chain(tmp_path)
     with pytest.raises(ValueError, match="batch"):
         build_calibration_manifest(
-            harness_revision=HEAD,
+            harness_revision=CALIBRATION_HEAD,
+            expected_origin_harness_revision=ORIGIN_HEAD,
             **{**chain, "origin_batch_run_id": "origin-some-other-batch"},
         )
 
@@ -355,14 +397,18 @@ def test_4_of_5_origin_artifacts_zero_calls(tmp_path: Path) -> None:
     assert len(artifact_files) == 5
     artifact_files[0].unlink()
     with pytest.raises(ValueError, match="artifact"):
-        build_calibration_manifest(harness_revision=HEAD, **chain)
+        build_calibration_manifest(
+            harness_revision=CALIBRATION_HEAD,
+            expected_origin_harness_revision=ORIGIN_HEAD,
+            **chain,
+        )
 
 
 # ---------------------------------------------------------------------------
 # Calibration manifest byte/SHA mutation -> zero calls
 # ---------------------------------------------------------------------------
 def test_calibration_manifest_byte_mutation_zero_calls(tmp_path: Path) -> None:
-    manifest, manifest_bytes, _ = _prepared_manifest(tmp_path)
+    manifest, manifest_bytes, _, verified = _prepared_manifest(tmp_path)
     transport, count = _ok_transport()
     sink = AtomicCalibrationSink(tmp_path / "cal")
     tampered = bytearray(manifest_bytes)
@@ -371,7 +417,8 @@ def test_calibration_manifest_byte_mutation_zero_calls(tmp_path: Path) -> None:
         execute_calibration_run(
             manifest_bytes=bytes(tampered),
             expected_manifest_sha256=manifest.sha256,
-            actual_harness_revision=HEAD,
+            actual_harness_revision=CALIBRATION_HEAD,
+            verified_origin=verified,
             auth=_auth(),
             batch_run_id=manifest.batch_run_id,
             transport=transport,
@@ -381,14 +428,15 @@ def test_calibration_manifest_byte_mutation_zero_calls(tmp_path: Path) -> None:
 
 
 def test_calibration_manifest_sha_mutation_zero_calls(tmp_path: Path) -> None:
-    manifest, manifest_bytes, _ = _prepared_manifest(tmp_path)
+    manifest, manifest_bytes, _, verified = _prepared_manifest(tmp_path)
     transport, count = _ok_transport()
     sink = AtomicCalibrationSink(tmp_path / "cal")
     with pytest.raises(ValueError, match="hash"):
         execute_calibration_run(
             manifest_bytes=manifest_bytes,
             expected_manifest_sha256="0" * 64,
-            actual_harness_revision=HEAD,
+            actual_harness_revision=CALIBRATION_HEAD,
+            verified_origin=verified,
             auth=_auth(),
             batch_run_id=manifest.batch_run_id,
             transport=transport,
@@ -401,8 +449,8 @@ def test_calibration_manifest_sha_mutation_zero_calls(tmp_path: Path) -> None:
 # Seal-A/use-B substitution impossible (N3)
 # ---------------------------------------------------------------------------
 def test_seal_a_use_b_substitution_impossible(tmp_path: Path) -> None:
-    manifest_a, _manifest_a_bytes, _ = _prepared_manifest(tmp_path)
-    manifest_b, _, _ = _prepared_manifest(tmp_path)
+    manifest_a, _manifest_a_bytes, _, verified = _prepared_manifest(tmp_path)
+    manifest_b, _, _, _verified_b = _prepared_manifest(tmp_path)
     assert manifest_a.sha256 != manifest_b.sha256
     transport, count = _ok_transport()
     sink = AtomicCalibrationSink(tmp_path / "cal")
@@ -410,7 +458,8 @@ def test_seal_a_use_b_substitution_impossible(tmp_path: Path) -> None:
         execute_calibration_run(
             manifest_bytes=manifest_b.to_exact_bytes(),
             expected_manifest_sha256=manifest_a.sha256,
-            actual_harness_revision=HEAD,
+            actual_harness_revision=CALIBRATION_HEAD,
+            verified_origin=verified,
             auth=_auth(),
             batch_run_id=manifest_a.batch_run_id,
             transport=transport,
@@ -420,12 +469,12 @@ def test_seal_a_use_b_substitution_impossible(tmp_path: Path) -> None:
 
 
 def test_validate_seal_exact_returns_same_object(tmp_path: Path) -> None:
-    manifest_a, _bytes_a, _ = _prepared_manifest(tmp_path)
+    manifest_a, _bytes_a, _, _verified = _prepared_manifest(tmp_path)
     returned = validate_calibration_manifest_seal_exact(
         manifest=manifest_a,
         manifest_sha256=manifest_a.sha256,
         auth=_auth(),
-        actual_harness_revision=HEAD,
+        actual_harness_revision=CALIBRATION_HEAD,
     )
     assert returned is manifest_a
 
@@ -434,7 +483,7 @@ def test_validate_seal_exact_returns_same_object(tmp_path: Path) -> None:
 # Request-byte contract: exact sealed bytes = HTTP Request.data (no continuation)
 # ---------------------------------------------------------------------------
 def test_exact_sealed_request_bytes_equal_http_data(tmp_path: Path) -> None:
-    manifest, manifest_bytes, specs = _prepared_manifest(tmp_path)
+    manifest, manifest_bytes, specs, verified = _prepared_manifest(tmp_path)
     got: list[bytes] = []
 
     def transport(*, payload: bytes) -> Any:
@@ -445,7 +494,8 @@ def test_exact_sealed_request_bytes_equal_http_data(tmp_path: Path) -> None:
     execute_calibration_run(
         manifest_bytes=manifest_bytes,
         expected_manifest_sha256=manifest.sha256,
-        actual_harness_revision=HEAD,
+        actual_harness_revision=CALIBRATION_HEAD,
+        verified_origin=verified,
         auth=_auth(),
         batch_run_id=manifest.batch_run_id,
         transport=transport,
@@ -462,7 +512,7 @@ def test_exact_sealed_request_bytes_equal_http_data(tmp_path: Path) -> None:
 
 
 def test_scoring_payload_no_transcript_truth(tmp_path: Path) -> None:
-    manifest, manifest_bytes, specs = _prepared_manifest(tmp_path)
+    manifest, manifest_bytes, specs, verified = _prepared_manifest(tmp_path)
     seen: list[bytes] = []
 
     def transport(*, payload: bytes) -> Any:
@@ -473,7 +523,8 @@ def test_scoring_payload_no_transcript_truth(tmp_path: Path) -> None:
     execute_calibration_run(
         manifest_bytes=manifest_bytes,
         expected_manifest_sha256=manifest.sha256,
-        actual_harness_revision=HEAD,
+        actual_harness_revision=CALIBRATION_HEAD,
+        verified_origin=verified,
         auth=_auth(),
         batch_run_id=manifest.batch_run_id,
         transport=transport,
@@ -502,7 +553,7 @@ def test_missing_api_key_no_started_marker_zero_transport(
 ) -> None:
     import protean_stage0.stage1a_calibration_cli as cli
 
-    manifest, manifest_bytes, _ = _prepared_manifest(tmp_path)
+    manifest, manifest_bytes, _, verified = _prepared_manifest(tmp_path)
     # Point the CLI at the synthetic origin chain, not any local gitignored files.
     c = _origin_chain(tmp_path)
     mpath = tmp_path / "cal.json"
@@ -511,7 +562,7 @@ def test_missing_api_key_no_started_marker_zero_transport(
     calls: list[str] = []
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.setattr(cli, "working_tree_is_clean", lambda: True)
-    monkeypatch.setattr(cli, "derive_head", lambda: HEAD)
+    monkeypatch.setattr(cli, "derive_head", lambda: CALIBRATION_HEAD)
     monkeypatch.setattr(cli, "_fixed_calibration_transport", lambda: calls.append("transport"))
     rc = cli.run_cli(
         [
@@ -551,14 +602,18 @@ def test_authority_mutation_zero_calls(tmp_path: Path) -> None:
     raw["batch_run_id"] = "tampered"
     oc_path.write_bytes(json.dumps(raw).encode("utf-8"))
     with pytest.raises(ValueError):
-        build_calibration_manifest(harness_revision=HEAD, **chain)
+        build_calibration_manifest(
+            harness_revision=CALIBRATION_HEAD,
+            expected_origin_harness_revision=ORIGIN_HEAD,
+            **chain,
+        )
 
 
 # ---------------------------------------------------------------------------
 # Deterministic analysis gating (threshold report; C=.50 futility stop)
 # ---------------------------------------------------------------------------
 def test_threshold_analysis_refuses_incomplete_run(tmp_path: Path) -> None:
-    manifest, _bytes, _ = _prepared_manifest(tmp_path)
+    manifest, _bytes, _, _verified = _prepared_manifest(tmp_path)
     with pytest.raises(ValueError, match="completed"):
         require_valid_completed_calibration(
             None,
@@ -568,13 +623,14 @@ def test_threshold_analysis_refuses_incomplete_run(tmp_path: Path) -> None:
 
 
 def test_threshold_c_equals_50_yields_deterministic_futility_stop(tmp_path: Path) -> None:
-    manifest, manifest_bytes, _ = _prepared_manifest(tmp_path)
+    manifest, manifest_bytes, _, verified = _prepared_manifest(tmp_path)
     transport, _ = _ok_transport(score="0.50")
     sink = AtomicCalibrationSink(tmp_path / "cal")
     _, _, completed = execute_calibration_run(
         manifest_bytes=manifest_bytes,
         expected_manifest_sha256=manifest.sha256,
-        actual_harness_revision=HEAD,
+        actual_harness_revision=CALIBRATION_HEAD,
+        verified_origin=verified,
         auth=_auth(),
         batch_run_id=manifest.batch_run_id,
         transport=transport,
@@ -618,7 +674,7 @@ def test_stage1a_manifest_seal_exact_returns_same_object(tmp_path: Path) -> None
     case_set = freeze_stage1a_case_set(cases)
     returned = validate_stage1a_manifest_seal_exact(
         m,
-        actual_harness_revision=HEAD,
+        actual_harness_revision=CALIBRATION_HEAD,
         protocol=auth.protocol,
         futility_amendment=auth.futility_amendment,
         real_origin_amendment=auth.real_origin_amendment,
@@ -663,7 +719,7 @@ def _real_stage1a_manifest() -> Any:
         scoring_prompt=auth.scoring_prompt,
         parse_contract_sha256="0" * 64,
         model_configuration=direct_model_configuration(),
-        harness_revision=HEAD,
+        harness_revision=CALIBRATION_HEAD,
         primary_evaluator=prov,
         reference_evaluator=prov,
         timestamp="T",
@@ -687,7 +743,11 @@ def test_duplicated_artifact_slot_attack_rejected(tmp_path: Path) -> None:
     slot2.write_bytes(slot1.read_bytes())
     assert slot1.read_bytes() == slot2.read_bytes()
     with pytest.raises(ValueError, match="request index"):
-        build_calibration_manifest(harness_revision=HEAD, **chain)
+        build_calibration_manifest(
+            harness_revision=CALIBRATION_HEAD,
+            expected_origin_harness_revision=ORIGIN_HEAD,
+            **chain,
+        )
 
 
 def test_swapped_valid_artifacts_rejected(tmp_path: Path) -> None:
@@ -699,7 +759,11 @@ def test_swapped_valid_artifacts_rejected(tmp_path: Path) -> None:
     slot1.write_bytes(c2)
     slot2.write_bytes(c1)  # swap the two valid artifacts
     with pytest.raises(ValueError):
-        build_calibration_manifest(harness_revision=HEAD, **chain)
+        build_calibration_manifest(
+            harness_revision=CALIBRATION_HEAD,
+            expected_origin_harness_revision=ORIGIN_HEAD,
+            **chain,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -711,15 +775,14 @@ def test_cli_execute_live_completed_60_60(tmp_path: Path, monkeypatch: pytest.Mo
     import protean_stage0.stage1a_calibration_cli as cli
     from protean_stage0.stage1a_calibration_driver import _build_calibration_specs
 
-    manifest, manifest_bytes, _ = _prepared_manifest(tmp_path)
+    manifest, manifest_bytes, _specs, origin = _fresh_prepared(tmp_path)
     mpath = tmp_path / "cal.json"
     mpath.write_bytes(manifest_bytes)
-    origin = _origin_chain(tmp_path)
     out = tmp_path / "out"
 
     # Deterministic expected request bytes, in manifest order.
     specs = _build_calibration_specs(
-        auth=_auth(), harness_revision=HEAD, batch_run_id=manifest.batch_run_id
+        auth=_auth(), harness_revision=CALIBRATION_HEAD, batch_run_id=manifest.batch_run_id
     )
     expected_by_index = {s.request_index: s.request_bytes for s in specs}
 
@@ -743,7 +806,10 @@ def test_cli_execute_live_completed_60_60(tmp_path: Path, monkeypatch: pytest.Mo
     # default_transport binding. Patch exactly that (no transport-injection param).
     monkeypatch.setattr(cli, "default_transport", fake_default_transport)
     monkeypatch.setattr(cli, "working_tree_is_clean", lambda: True)
-    monkeypatch.setattr(cli, "derive_head", lambda: HEAD)
+    monkeypatch.setattr(cli, "derive_head", lambda: CALIBRATION_HEAD)
+    # The historical origin harness authority is the synthetic origin head used to
+    # build this hermetic chain (production's real value is the authorized 52ed...).
+    monkeypatch.setattr(cli, "AUTHORIZED_ORIGIN_HARNESS", ORIGIN_HEAD)
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test-dummy")
 
     # Capture stdout on the single invocation to assert the COMPLETED status line.
@@ -794,13 +860,14 @@ def test_cli_execute_live_completed_60_60(tmp_path: Path, monkeypatch: pytest.Mo
 # Correction 3: analysis gating NON-OPTIONAL inside compute_calibration_report.
 # ---------------------------------------------------------------------------
 def test_report_allowed_with_correct_manifest_batch(tmp_path: Path) -> None:
-    manifest, manifest_bytes, _ = _prepared_manifest(tmp_path)
+    manifest, manifest_bytes, _, verified = _prepared_manifest(tmp_path)
     transport, _ = _ok_transport(score="0.60")
     sink = AtomicCalibrationSink(tmp_path / "cal")
     _, _, completed = execute_calibration_run(
         manifest_bytes=manifest_bytes,
         expected_manifest_sha256=manifest.sha256,
-        actual_harness_revision=HEAD,
+        actual_harness_revision=CALIBRATION_HEAD,
+        verified_origin=verified,
         auth=_auth(),
         batch_run_id=manifest.batch_run_id,
         transport=transport,
@@ -817,13 +884,14 @@ def test_report_allowed_with_correct_manifest_batch(tmp_path: Path) -> None:
 
 
 def test_report_rejects_wrong_manifest_sha(tmp_path: Path) -> None:
-    manifest, manifest_bytes, _ = _prepared_manifest(tmp_path)
+    manifest, manifest_bytes, _, verified = _prepared_manifest(tmp_path)
     transport, _ = _ok_transport(score="0.60")
     sink = AtomicCalibrationSink(tmp_path / "cal")
     _, _, completed = execute_calibration_run(
         manifest_bytes=manifest_bytes,
         expected_manifest_sha256=manifest.sha256,
-        actual_harness_revision=HEAD,
+        actual_harness_revision=CALIBRATION_HEAD,
+        verified_origin=verified,
         auth=_auth(),
         batch_run_id=manifest.batch_run_id,
         transport=transport,
@@ -840,13 +908,14 @@ def test_report_rejects_wrong_manifest_sha(tmp_path: Path) -> None:
 
 
 def test_report_rejects_wrong_batch(tmp_path: Path) -> None:
-    manifest, manifest_bytes, _ = _prepared_manifest(tmp_path)
+    manifest, manifest_bytes, _, verified = _prepared_manifest(tmp_path)
     transport, _ = _ok_transport(score="0.60")
     sink = AtomicCalibrationSink(tmp_path / "cal")
     _, _, completed = execute_calibration_run(
         manifest_bytes=manifest_bytes,
         expected_manifest_sha256=manifest.sha256,
-        actual_harness_revision=HEAD,
+        actual_harness_revision=CALIBRATION_HEAD,
+        verified_origin=verified,
         auth=_auth(),
         batch_run_id=manifest.batch_run_id,
         transport=transport,
@@ -863,7 +932,7 @@ def test_report_rejects_wrong_batch(tmp_path: Path) -> None:
 
 
 def test_report_rejects_59_of_60(tmp_path: Path) -> None:
-    manifest, manifest_bytes, _ = _prepared_manifest(tmp_path)
+    manifest, manifest_bytes, _, verified = _prepared_manifest(tmp_path)
     calls: list[int] = []
 
     def transport(*, payload: bytes) -> Any:
@@ -877,7 +946,8 @@ def test_report_rejects_59_of_60(tmp_path: Path) -> None:
     _, _, completed = execute_calibration_run(
         manifest_bytes=manifest_bytes,
         expected_manifest_sha256=manifest.sha256,
-        actual_harness_revision=HEAD,
+        actual_harness_revision=CALIBRATION_HEAD,
+        verified_origin=verified,
         auth=_auth(),
         batch_run_id=manifest.batch_run_id,
         transport=transport,
@@ -909,3 +979,124 @@ def test_report_rejects_fabricated_self_consistent_object() -> None:
             expected_batch_run_id="expected-batch",
             truth_map={f"S1A-{i:02d}": (i % 2 == 0) for i in range(1, 61)},
         )
+
+
+# ---------------------------------------------------------------------------
+# Blocker 1 regression: historical origin harness revision and the CURRENT
+# calibration head are distinct; origin evidence stays historically immutable.
+# ---------------------------------------------------------------------------
+def test_historical_origin_head_differs_from_calibration_head(tmp_path: Path) -> None:
+    assert ORIGIN_HEAD != CALIBRATION_HEAD
+    manifest, manifest_bytes, _specs, origin = _fresh_prepared(tmp_path)
+    # Calibration manifest binds the CURRENT calibration head.
+    assert manifest.harness_revision == CALIBRATION_HEAD
+    # The origin manifest remains sealed at the HISTORICAL origin harness.
+    from protean_stage0.stage1a_origin_run_manifest import Stage1AOriginRunManifest
+
+    om = Stage1AOriginRunManifest._reconstruct(origin["origin_manifest_path"].read_bytes())
+    assert om.harness_revision == ORIGIN_HEAD
+    assert om.harness_revision != manifest.harness_revision
+    # Full 60/60/0 success (historical + current-head separation is honored).
+    verified = _verified_authority(origin)
+    transport, _ = _ok_transport()
+    sink = AtomicCalibrationSink(tmp_path / "cal")
+    status, evidence, completed = execute_calibration_run(
+        manifest_bytes=manifest_bytes,
+        expected_manifest_sha256=manifest.sha256,
+        actual_harness_revision=CALIBRATION_HEAD,
+        verified_origin=verified,
+        auth=_auth(),
+        batch_run_id=manifest.batch_run_id,
+        transport=transport,
+        evidence_sink=sink,
+    )
+    assert status.value == "COMPLETED"
+    assert completed is not None
+    assert len(evidence) == 60
+
+
+# ---------------------------------------------------------------------------
+# Blocker 2 regression: a calibration manifest prepared against chain A must NOT
+# execute against an independent chain B (rejected before transport, 0 calls).
+# ---------------------------------------------------------------------------
+def test_chain_a_manifest_chain_b_live_rejected(tmp_path: Path) -> None:
+    # Manifest A prepared against chain A.
+    manifest_a, manifest_a_bytes, _specs, chain_a = _fresh_prepared(tmp_path)
+    # Independent valid origin chain B (distinct batch).
+    chain_b = _origin_chain(tmp_path)
+    verified_b = _verified_authority(chain_b)
+    assert chain_a["origin_batch_run_id"] != chain_b["origin_batch_run_id"]
+
+    transport, count = _ok_transport()
+    sink = AtomicCalibrationSink(tmp_path / "cal")
+    # Chain B verified, but manifest A sealed to chain A -> must reject before batch start.
+    with pytest.raises(ValueError, match="origin binding"):
+        execute_calibration_run(
+            manifest_bytes=manifest_a_bytes,
+            expected_manifest_sha256=manifest_a.sha256,
+            actual_harness_revision=CALIBRATION_HEAD,
+            verified_origin=verified_b,
+            auth=_auth(),
+            batch_run_id=manifest_a.batch_run_id,
+            transport=transport,
+            evidence_sink=sink,
+        )
+    assert count["n"] == 0
+    assert not list((Path(tmp_path) / "cal").glob("calibration-batch-*.started"))
+    assert not list((Path(tmp_path) / "cal").glob("calibration-evidence-*.json"))
+    assert not list((Path(tmp_path) / "cal").glob("calibration-completed-*.json"))
+
+
+def test_chain_substitution_cli_rejected(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import protean_stage0.direct_responses as dr
+    import protean_stage0.stage1a_calibration_cli as cli
+
+    # Manifest A against chain A; live CLI pointed at chain B.
+    manifest_a, manifest_a_bytes, _specs, chain_a = _fresh_prepared(tmp_path)
+    chain_b = _origin_chain(tmp_path)
+    mpath = tmp_path / "cal.json"
+    mpath.write_bytes(manifest_a_bytes)
+    out = tmp_path / "out"
+    calls: list[str] = []
+    monkeypatch.setattr(cli, "working_tree_is_clean", lambda: True)
+    monkeypatch.setattr(cli, "derive_head", lambda: CALIBRATION_HEAD)
+    monkeypatch.setattr(cli, "AUTHORIZED_ORIGIN_HARNESS", ORIGIN_HEAD)
+    monkeypatch.setattr(
+        cli,
+        "default_transport",
+        lambda *a, **k: dr.TransportResult(200, _scoring_ok("0.5")),
+    )
+    monkeypatch.setattr(
+        "protean_stage0.stage1a_calibration_cli._fixed_calibration_transport",
+        lambda: calls.append("t"),
+    )
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-dummy")
+    rc = cli.run_cli(
+        [
+            "--execute-live",
+            "--manifest",
+            str(mpath),
+            "--expected-manifest-sha",
+            manifest_a.sha256,
+            "--origin-manifest",
+            str(chain_b["origin_manifest_path"]),
+            "--origin-manifest-sha",
+            chain_b["origin_manifest_sha256"],
+            "--origin-completed",
+            str(chain_b["origin_completed_path"]),
+            "--origin-completed-sha",
+            chain_b["origin_completed_sha256"],
+            "--origin-artifacts-dir",
+            str(chain_b["origin_artifacts_dir"]),
+            "--origin-batch",
+            chain_b["origin_batch_run_id"],
+            "--out-dir",
+            str(out),
+        ],
+    )
+    # Rejected before any transport; nonzero rc; no batch marker/evidence.
+    assert rc != 0
+    assert calls == []
+    assert not list(out.glob("calibration-batch-*.started"))
+    assert not list(out.glob("calibration-evidence-*.json"))
+    assert not list(out.glob("calibration-completed-*.json"))

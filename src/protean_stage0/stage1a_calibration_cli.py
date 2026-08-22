@@ -40,6 +40,7 @@ from .stage1a_calibration_driver import (
     AtomicCalibrationSink,
     Stage1ACalibrationManifest,
     _build_calibration_specs,
+    _require_origin_binding,
     _verify_origin_chain,
     build_calibration_manifest,
     execute_calibration_run,
@@ -53,6 +54,8 @@ DEFAULT_MANIFEST_DIR = REPO_ROOT / "stage0/runs"
 AUTHORIZED_ORIGIN_MANIFEST_SHA = "93bfddcb87bd1d0d3d4a55a8bba0aab3f3c26ecea5eaae322708e7b386b2145c"
 AUTHORIZED_ORIGIN_COMPLETED_SHA = "5cd48f96ca5ce569ecbb2ec1670fdecbdcefcf497cb80dce4d19fdedeb4f0e29"
 AUTHORIZED_ORIGIN_BATCH = "origin-52ed337bb583-20260821T173319220626Z"
+# Historical git HEAD the successful real-origin run was sealed against.
+AUTHORIZED_ORIGIN_HARNESS = "52ed337bb583151b6b2d020a3344474d4f4bdced"
 
 
 def _git(*args: str) -> str:
@@ -107,6 +110,7 @@ def prepare_calibration_manifest(harness_revision: str) -> tuple[str, Path, str,
     origin = _default_origin_inputs()
     manifest, _specs = build_calibration_manifest(
         harness_revision=harness_revision,
+        expected_origin_harness_revision=AUTHORIZED_ORIGIN_HARNESS,
         origin_manifest_path=origin["origin_manifest_path"],
         origin_manifest_sha256=AUTHORIZED_ORIGIN_MANIFEST_SHA,
         origin_completed_path=origin["origin_completed_path"],
@@ -211,9 +215,9 @@ def run_cli(argv: list[str] | None = None) -> int:
         # Re-read + verify the entire origin chain through the SAME canonical strong
         # verifier used by preparation (single source of truth).
         try:
-            _verify_origin_chain(
+            verified = _verify_origin_chain(
                 auth=auth,
-                actual_harness_revision=head,
+                expected_origin_harness_revision=AUTHORIZED_ORIGIN_HARNESS,
                 origin_manifest_path=origin_manifest_path,
                 origin_manifest_sha256=origin_manifest_sha,
                 origin_completed_path=origin_completed_path,
@@ -231,6 +235,14 @@ def run_cli(argv: list[str] | None = None) -> int:
             auth=auth,
             actual_harness_revision=head,
         )
+        # Blocker 2: the calibration manifest's sealed origin bindings must equal the
+        # EXACT origin chain verified above (chain A manifest + chain B live fails here,
+        # before any transport construction or batch start).
+        try:
+            _require_origin_binding(manifest, verified)
+        except ValueError as exc:
+            print(f"STOP: calibration manifest origin binding mismatch ({exc}) (0 calls)")
+            return 2
         # Rederive all 60 request bytes/SHAs and require equality.
         cal_specs = _build_calibration_specs(
             auth=auth, harness_revision=head, batch_run_id=origin_batch
@@ -244,15 +256,22 @@ def run_cli(argv: list[str] | None = None) -> int:
             print("STOP: OPENAI_API_KEY is not set (no HTTP attempts, no batch started)")
             return 2
         sink = AtomicCalibrationSink(Path(args.out_dir))
-        status, evidence, completed = execute_calibration_run(
-            manifest_bytes=manifest_bytes,
-            expected_manifest_sha256=expected_sha,
-            actual_harness_revision=head,
-            auth=auth,
-            batch_run_id=manifest.batch_run_id,
-            transport=_fixed_calibration_transport(),
-            evidence_sink=sink,
-        )
+        try:
+            status, evidence, completed = execute_calibration_run(
+                manifest_bytes=manifest_bytes,
+                expected_manifest_sha256=expected_sha,
+                actual_harness_revision=head,
+                verified_origin=verified,
+                auth=auth,
+                batch_run_id=manifest.batch_run_id,
+                transport=_fixed_calibration_transport(),
+                evidence_sink=sink,
+            )
+        except ValueError as exc:
+            # e.g. origin-binding mismatch (chain B fed to a chain-A manifest) must
+            # STOP cleanly before any transport / batch start.
+            print(f"STOP: calibration preflight rejected ({exc}) (0 calls)")
+            return 2
         print(f"calibration_status={status.value}")
         if completed is not None:
             print(f"completed_calibration_sha256={completed.sha256}")

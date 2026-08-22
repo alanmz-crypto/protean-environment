@@ -499,6 +499,29 @@ def _score_of(evidence: CalibrationEvidence) -> float:
     return evidence.parsed_score
 
 
+@dataclass(frozen=True, slots=True)
+class VerifiedOriginAuthority:
+    """The exact origin chain independently verified at runtime (prepare OR live).
+
+    Carries the verified origin manifest SHA, completed-run SHA, batch ID and the
+    HISTORICAL origin harness revision (the git HEAD the successful origin run was
+    sealed against), plus the mechanically verified CompletedOriginRun and the five
+    verified artifacts. A calibration manifest is valid only if its sealed origin
+    bindings equal THESE values.
+    """
+
+    origin_manifest_sha256: str
+    origin_completed_run_sha256: str
+    origin_batch_run_id: str
+    origin_harness_revision: str
+    completed_run: CompletedOriginRun
+    artifacts: tuple[Any, ...]
+
+    @property
+    def completed_run_sha256(self) -> str:
+        return self.completed_run.completed_run_sha256
+
+
 # ---------------------------------------------------------------------------
 # Origin-chain verification (used by both prepare + live)
 # ---------------------------------------------------------------------------
@@ -507,15 +530,22 @@ def _score_of(evidence: CalibrationEvidence) -> float:
 def _verify_origin_chain(
     *,
     auth: LoadedStage1AAuthority,
-    actual_harness_revision: str,
+    expected_origin_harness_revision: str,
     origin_manifest_path: Path,
     origin_manifest_sha256: str,
     origin_completed_path: Path,
     origin_completed_sha256: str,
     origin_artifacts_dir: Path,
     origin_batch_run_id: str,
-) -> tuple[CompletedOriginRun, tuple[Any, ...]]:
-    """Re-read and independently verify the ENTIRE origin chain (mandatory)."""
+) -> VerifiedOriginAuthority:
+    """Re-read, hash, and mechanically verify the ENTIRE origin chain.
+
+    Verifies the origin manifest against its HISTORICAL origin harness revision
+    (not the current calibration code HEAD), then proves 5/5/0, five artifacts in
+    exact index/slot/structure/content, and each artifact SHA slot in the completed
+    run. Returns the typed verified-origin authority that a calibration manifest
+    must exactly bind.
+    """
     if origin_manifest_path is None or not origin_manifest_path.exists():
         raise ValueError("origin manifest file is required")
     raw_manifest = origin_manifest_path.read_bytes()
@@ -527,7 +557,7 @@ def _verify_origin_chain(
     validate_origin_run_manifest_seal(
         manifest=origin_manifest,
         manifest_sha256=origin_manifest_sha256,
-        actual_harness_revision=actual_harness_revision,
+        actual_harness_revision=expected_origin_harness_revision,
         auth=auth,
     )
     if origin_manifest.batch_run_id != origin_batch_run_id:
@@ -599,7 +629,14 @@ def _verify_origin_chain(
             expected_batch_run_id=origin_batch_run_id,
             expected_request_index=index,
         )
-    return completed, tuple(artifacts)
+    return VerifiedOriginAuthority(
+        origin_manifest_sha256=origin_manifest.sha256,
+        origin_completed_run_sha256=origin_completed_sha256,
+        origin_batch_run_id=origin_batch_run_id,
+        origin_harness_revision=origin_manifest.harness_revision,
+        completed_run=completed,
+        artifacts=tuple(artifacts),
+    )
 
 
 def _build_calibration_specs(
@@ -630,6 +667,7 @@ def _build_calibration_specs(
 def build_calibration_manifest(
     *,
     harness_revision: str,
+    expected_origin_harness_revision: str,
     origin_manifest_path: Path | None,
     origin_manifest_sha256: str,
     origin_completed_path: Path | None,
@@ -649,9 +687,9 @@ def build_calibration_manifest(
     if origin_completed_path is None:
         raise ValueError("origin completed path is required")
     auth = load_authority_artifacts(verify_expected=True)
-    completed, _artifacts = _verify_origin_chain(
+    verified = _verify_origin_chain(
         auth=auth,
-        actual_harness_revision=harness_revision,
+        expected_origin_harness_revision=expected_origin_harness_revision,
         origin_manifest_path=origin_manifest_path,
         origin_manifest_sha256=origin_manifest_sha256,
         origin_completed_path=origin_completed_path,
@@ -682,9 +720,9 @@ def build_calibration_manifest(
         case_set_sha256=case_set.sha256,
         parse_contract_sha256=PLAIN_DECIMAL_V1_SHA256,
         cross_session_rep_version=CROSS_SESSION_REP_VERSION,
-        origin_run_manifest_sha256=origin_manifest_sha256,
-        origin_completed_run_sha256=origin_completed_sha256,
-        origin_batch_run_id=origin_batch_run_id,
+        origin_run_manifest_sha256=verified.origin_manifest_sha256,
+        origin_completed_run_sha256=verified.origin_completed_run_sha256,
+        origin_batch_run_id=verified.origin_batch_run_id,
         ordered_case_ids=ordered_ids,
         per_case_request_sha=req_shas,
         truth_map=truth,
@@ -762,6 +800,23 @@ class CalibrationTransport(Protocol):
         ...
 
 
+def _require_origin_binding(
+    manifest: Stage1ACalibrationManifest, verified: VerifiedOriginAuthority
+) -> None:
+    """A calibration manifest may only execute against the EXACT origin chain it was
+    prepared against. The live-sealed origin bindings must equal the independently
+    verified origin authority; any mismatch => 0 calls, 0 batch start."""
+    mismatches = []
+    if manifest.origin_run_manifest_sha256 != verified.origin_manifest_sha256:
+        mismatches.append("origin manifest SHA")
+    if manifest.origin_completed_run_sha256 != verified.origin_completed_run_sha256:
+        mismatches.append("origin completed-run SHA")
+    if manifest.origin_batch_run_id != verified.origin_batch_run_id:
+        mismatches.append("origin batch")
+    if mismatches:
+        raise ValueError("calibration manifest origin binding mismatch: " + ", ".join(mismatches))
+
+
 def _evidence_for(
     *,
     batch: str,
@@ -812,6 +867,7 @@ def execute_calibration_run(
     manifest_bytes: bytes,
     expected_manifest_sha256: str,
     actual_harness_revision: str,
+    verified_origin: VerifiedOriginAuthority,
     auth: LoadedStage1AAuthority,
     batch_run_id: str,
     transport: CalibrationTransport,
@@ -835,6 +891,8 @@ def execute_calibration_run(
     )
     if manifest.batch_run_id != batch_run_id:
         raise ValueError("provided calibration batch does not match sealed manifest batch")
+    # Blocker 2: the manifest's sealed origin chain must equal the verified one.
+    _require_origin_binding(manifest, verified_origin)
     evidence_sink.start_batch(batch_run_id, manifest.sha256)
     # Rederive all 60 exact request bytes from the freshly loaded authorities.
     specs = _build_calibration_specs(
