@@ -1,11 +1,13 @@
-# Stage 1A — Calibration Threshold Freeze (CANDIDATE — NOT RATIFIED)
+# Stage 1A — Calibration Threshold Freeze Record
 
-STATUS: **CANDIDATE for Ryan review — UNCOMMITTED, not authoritative.** This is a
-candidate closeout/freeze record produced mechanically from the existing frozen
-threshold machinery. It does not establish a new scientific storage convention and
-does not alter any protocol, amendment, source code, or Stage-1B surface. No prior
-canonical Stage-1A threshold-freeze artifact or path existed in the repository;
-this document is proposed for review only.
+STATUS: **FROZEN / RATIFIED — committed on main.** The Stage-1A calibration
+threshold result recorded here is frozen and ratifies the mechanical outcome of
+the existing frozen threshold machinery. This record produced no scientific
+interpretation and altered no protocol, amendment, source code, or Stage-1B
+surface.
+
+> Filename retained from the pre-ratification candidate artifact for repository
+> continuity; repository status and commit history are authoritative.
 
 Science discipline: this binds preregistered calibration quantities only. It makes
 no exploratory interpretation, causal explanation, architecture inference, or
@@ -76,6 +78,6 @@ overridden or reinterpreted here.
 
 ## Boundary
 
-- This is a candidate freeze record. Ratification, if any, is Ryan's.
+- This freeze record is committed on main and is authoritative.
 - Stage 1B and scientific interpretation beyond the preregistered quantities above
   remain NOT AUTHORIZED.
